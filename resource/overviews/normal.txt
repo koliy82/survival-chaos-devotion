@@ -1,0 +1,8 @@
+4p
+{
+	material materials/overviews/4p.vmat
+	pos_x -8161
+	pos_y 8492
+	scale 16.000
+}
+

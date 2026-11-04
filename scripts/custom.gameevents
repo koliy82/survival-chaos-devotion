@@ -1,0 +1,19 @@
+"CustomEvents"
+{
+	"custom_spawn_unit"
+	{
+		"spawner_unit"		"long"
+		"spawner_ability"	"long"
+		"unit"				"long"
+	}
+	"capture_neutral"
+	{
+		"neutral"			"long"
+		"old_team"			"long"
+		"new_team"			"long"
+	}
+	"building_upgrade"
+	{
+		"building"			"long"
+	}
+}

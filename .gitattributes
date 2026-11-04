@@ -1,2 +1,29 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# SCD: binary resources - never normalize
+*.vpk binary
+*.webm binary
+*.tank binary
+*.png binary
+*.jpg binary
+*.psd binary
+*.bin binary
+*.vtex_c binary
+*.vjs_c binary
+*.vcss_c binary
+*.vxml_c binary
+*.vmat_c binary
+*.vmdl_c binary
+*.vmesh_c binary
+*.vanim_c binary
+*.vpcf_c binary
+*.vphys_c binary
+*.vagrp_c binary
+*.vseq_c binary
+*.vmorf_c binary
+*.vsnd_c binary
+*.vsndevts_c binary
+*.vdata_c binary
+*.vjs_c.bak binary
+*.vjs_c.orig binary

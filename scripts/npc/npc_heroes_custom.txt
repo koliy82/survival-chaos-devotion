@@ -1,0 +1,36 @@
+// Dota Heroes File
+// NOTE: This is not for creating new heroes, this is for taking a currently existing hero as a template and overriding
+// the specified key-value combinations.  Use override_hero <hero_to_override> for this.
+"DOTAHeroes"
+{
+    "npc_dota_hero_wisp"
+	{
+		"Model"		"models/heroes/wisp/wisp.vmdl"
+		"Ability1"		""
+		"Ability2"		""
+		"Ability3"		""		
+		"Ability4"		""
+		"Ability5"		""
+		"Ability6"		""
+		"Ability7"		""
+		"Ability8"		""
+		"Ability10"		""
+		"Ability11"		""
+		"Ability12"		""
+		"Ability13"		""
+		"Ability14"		""
+		"Ability15"		""
+		"Ability16"		""
+		"Ability17"		""
+		"ArmorPhysical"		"0"
+		"AttackCapabilities"		"DOTA_UNIT_CAP_NO_ATTACK"
+		"AttackDamageMin"		"0"
+		"AttackDamageMax"		"0"
+		"AttackRate"		"1.700000"
+		"AttackAnimationPoint"		"0.150000"
+		"AttackAcquisitionRange"		"800"
+		"AttackRange"		"0"
+		"HealthBarOffset"			"9999"
+		"MinimapIconSize"           "0"
+    }
+}
