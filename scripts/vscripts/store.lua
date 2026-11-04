@@ -159,31 +159,63 @@ function Store:TestStore(id)
 	end
 end
 
-function Store:PlayersStoreLoaded(datastr)
-	-- print(datastr)
-	datastr = datastr:gsub( ":null", ":"..'"'..'"' )
-	-- print(datastr)
-	local data = json.decode(datastr)
-	if data and data["loaded"] then
-		DeepPrintTable(data)
-		for i=1,PlayerResource:GetPlayerCount() do
-			local id = i - 1
+-- [SCD-FIX] локальный фоллбек: магазин недоступен -> играем без него, но не зависаем
+function Store:PlayersStoreFallback(reason)
+	if Store.playersStoreLoaded or Store.Loaded then
+		return
+	end
+	print("[SCD-FIX] store fallback: " .. tostring(reason))
+	for i = 1, PlayerResource:GetPlayerCount() do
+		local id = i - 1
+		if Store.playersData[id] == nil then
 			Store.playersData[id] = {}
 			Store.playersData[id].itemsData = {}
 			Store.playersData[id].itemsData.playerEquips = {}
 			Store.playersData[id].itemsData.playerOwns = {}
+			Store.playersData[id].coins = 0
+			Store.playersData[id].ecoins = 0
+		end
+	end
+	Store.playersStoreLoaded = true
+	if Store.playersBoostLoaded == true then
+		Store:PlayersDataLoaded()
+	end
+end
+
+function Store:PlayersStoreLoaded(datastr)
+	-- [SCD-FIX] раньше nil/мусор из сети валили колбэк (gsub по nil, json.decode по мусору)
+	if type(datastr) ~= "string" or datastr == "" then
+		Store:PlayersStoreFallback("empty store.php body")
+		return
+	end
+	local ok, data = pcall(json.decode, datastr:gsub( ":null", ":"..'"'..'"' ))
+	if not ok or data == nil then
+		print("[SCD-DIAG] store.php body is not valid JSON: " .. tostring(data):sub(1, 200))
+		Store:PlayersStoreFallback("bad store.php json")
+		return
+	end
+	if data and data["loaded"] then
+		DeepPrintTable(data)
+		for i=1,PlayerResource:GetPlayerCount() do
+			local id = i - 1
+			if Store.playersData[id] == nil then
+				Store.playersData[id] = {}
+				Store.playersData[id].itemsData = {}
+				Store.playersData[id].itemsData.playerEquips = {}
+				Store.playersData[id].itemsData.playerOwns = {}
+			end
 
 			local steamid = tostring(PlayerResource:GetSteamAccountID(id))
 			-- print(steamid)
 			if data[steamid] ~= nil then
-				Store.playersData[id].coins = tonumber(data[steamid]["coins"])
-				Store.playersData[id].ecoins = tonumber(data[steamid]["ecoins"])
-				local savedData = json.decode(data[steamid]["itemsData"])
-				if savedData ~= nil then
-					for _, item in pairs(savedData.playerOwns) do
+				Store.playersData[id].coins = tonumber(data[steamid]["coins"]) or 0
+				Store.playersData[id].ecoins = tonumber(data[steamid]["ecoins"]) or 0
+				local okSaved, savedData = pcall(json.decode, data[steamid]["itemsData"] or "")
+				if okSaved and savedData ~= nil then
+					for _, item in pairs(savedData.playerOwns or {}) do
 						Store.playersData[id].itemsData.playerOwns[item] = true
 					end
-					for _, item in pairs(savedData.playerEquips) do
+					for _, item in pairs(savedData.playerEquips or {}) do
 						Store.playersData[id].itemsData.playerEquips[item] = true
 					end
 				end
@@ -197,6 +229,8 @@ function Store:PlayersStoreLoaded(datastr)
 		if Store.playersBoostLoaded == true then
 			Store:PlayersDataLoaded()
 		end
+	else
+		Store:PlayersStoreFallback("store.php loaded=false")
 	end
 end
 
@@ -444,17 +478,24 @@ function Store:EquipItem(data)
 end
 
 function Store:OnPlayerLoaded(data)
+	-- [SCD-FIX] раньше при недоступном магазине таймер крутился вечно; теперь максимум 90 попыток
+	data = data or {}
+	Store._playerLoadedTries = Store._playerLoadedTries or {}
+	Store._playerLoadedTries[data.PlayerID] = (Store._playerLoadedTries[data.PlayerID] or 0) + 1
 	if Store.Loaded == true and Store.playersData[data.PlayerID] then
+		Store._playerLoadedTries[data.PlayerID] = nil
 		for item, _ in pairs(Store.playersData[data.PlayerID].itemsData.playerEquips) do
-			if Store.items[item].type == "pet" then
+			if Store.items[item] and Store.items[item].type == "pet" then
 				data.item = Store.items[item]
 				Pets:CreatePet( data )
 			end
 		end
-	else
+	elseif Store._playerLoadedTries[data.PlayerID] < 90 then
 		Timers:CreateTimer(1, function()
 			Store:OnPlayerLoaded(data)
 		end)
+	else
+		print("[SCD-FIX] Store:OnPlayerLoaded give up for pid " .. tostring(data.PlayerID))
 	end
 end
 

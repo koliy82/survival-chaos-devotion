@@ -1,19 +1,46 @@
+-- [SCD-FIX] единый возврат за прерванную/сбитую попытку апгрейда башни
+-- цена уровня N в Dota API читается как GetGoldCost(N-1): движок списывает именно её
+local function RefundTowerCast(ability, id)
+    if ability.scd_refunded then return end
+    local lvl = ability:GetLevel()
+    local cost = lvl > 0 and ability:GetGoldCost(lvl - 1)
+    if cost == nil or cost == 0 then
+        cost = ability:GetGoldCost(lvl)
+    end
+    if cost and cost > 0 then
+        ability.scd_refunded = true
+        PlayerResource:ModifyGold(id, cost, false, DOTA_ModifyGold_Unspecified)
+        print("[SCD-DIAG] tower refund: " .. ability:GetAbilityName() .. " lvl=" .. lvl ..
+            " cost=" .. tostring(cost) .. " pid=" .. id)
+    end
+end
+
 function OnSpellStart(event)
     local caster = event.caster
+    local ability = event.ability
     local id = caster:GetPlayerOwnerID()
     if _G.playersinfo[id].ancient and _G.playersinfo[id].ancient:GetLevel() > 1 then
         if _G.playersinfo[id].spec.specpass then
-            local ability = event.ability
             local ability_name = ability:GetAbilityName()
+            -- [SCD-FIX] новая попытка каста: сбрасываем флаг возврата
+            ability.scd_refunded = nil
             for k, v in pairs(_G.playersinfo[id].towers) do
                 v:FindAbilityByName(ability_name):SetActivated(false)
             end
-        else
-            caster:Stop()
-            CustomGameEventManager:Send_ServerToPlayer(caster:GetPlayerOwner(), "display_custom_error", { message = "#need_select_spec" })
+            return
         end
-    else
+        print("[SCD-DIAG] tower OnSpellStart fail: need spec, pid=" .. id)
+        ability.scd_refunded = nil
         caster:Stop()
+        -- [SCD-FIX] канал не начинался, прерывание не диспатчится: возвращаем здесь
+        RefundTowerCast(ability, id)
+        CustomGameEventManager:Send_ServerToPlayer(caster:GetPlayerOwner(), "display_custom_error", { message = "#need_select_spec" })
+    else
+        print("[SCD-DIAG] tower OnSpellStart fail: need castle lvl 2, pid=" .. id)
+        ability.scd_refunded = nil
+        caster:Stop()
+        -- [SCD-FIX] канал не начинался, прерывание не диспатчится: возвращаем здесь
+        RefundTowerCast(ability, id)
         CustomGameEventManager:Send_ServerToPlayer(caster:GetPlayerOwner(), "display_custom_error", { message = "#need_ancient_level_2" })
     end
 end
@@ -23,6 +50,10 @@ function OnChannelInterrupted(event)
     local ability = event.ability
     local ability_name = ability:GetAbilityName()
     local id = caster:GetPlayerOwnerID()
+    -- [SCD-FIX] возврат золота: авторский dd_return_gold из KV не вызывается вовсе
+    -- (RunScript резолвит функцию из ScriptFile тела способности, где ReturnGold нет),
+    -- а событие прерывания диспатчится движком ДВАЖДЫ - поэтому возврат с флагом, ровно один раз
+    RefundTowerCast(ability, id)
     for k, v in pairs(_G.playersinfo[id].towers) do
         v:FindAbilityByName(ability_name):SetActivated(true)
     end
@@ -36,14 +67,14 @@ function ApplyTowerUpgrade(event)
     local grade_name = ability:GetAbilityName()
     local level = ability:GetLevel()
     local gradekv = _G.playersinfo[id].raceinfo["tower_upgrades"][grade_name]
-    
+
     _G.playerstats[id].tower_upgrades = _G.playerstats[id].tower_upgrades + 1
-    
+
     if gradekv.gpt then
         _G.playersinfo[id].ancient.gpt = _G.playersinfo[id].ancient.gpt + gradekv.gpt
         _G.playersinfo[id].gpt = _G.playersinfo[id].gpt + gradekv.gpt
     end
-    
+
     if gradekv.wave_cd_red then
         for k, v in pairs(_G.playersinfo[id].baracks) do
             v.barrack_timer = v.barrack_timer - gradekv.wave_cd_red
@@ -88,19 +119,19 @@ function ApplyTowerUpgrade(event)
     if gradekv.castle then
         UpgradeBuilding(level, _G.playersinfo[id].ancient, gradekv.castle)
     end
-    
+
     if gradekv.barracks then
         for k, v in pairs(_G.playersinfo[id].baracks) do
             UpgradeBuilding(level, v, gradekv.barracks)
         end
     end
-    
+
     if gradekv.towers then
         for k, v in pairs(_G.playersinfo[id].towers) do
             UpgradeBuilding(level, v, gradekv.towers)
         end
     end
-    
+
     if level < gradekv.max_level then
 		for k, v in pairs(_G.playersinfo[id].towers) do
             v:FindAbilityByName(grade_name):SetActivated(true)

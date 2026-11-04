@@ -47,7 +47,13 @@ WebBD.commitfunc = function(self, onresult)
                     onresult({})
                 end
             else
-                local loctable = json.decode(result.Body)
+                -- [SCD-FIX] мусор/nil из сети не валит колбэк
+                local ok, loctable = pcall(json.decode, result.Body)
+                if not ok or loctable == nil then
+                    print("[SCD-DIAG] webbd.php bad json")
+                    if onresult then onresult({}) end
+                    return
+                end
                 if onresult then
                     onresult(loctable)
                 end

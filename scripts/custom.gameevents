@@ -16,4 +16,10 @@
 	{
 		"building"			"long"
 	}
+	"SetCameraPos"
+	{
+		"pos_0"				"long"
+		"pos_1"				"long"
+		"pos_2"				"long"
+	}
 }

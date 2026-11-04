@@ -533,9 +533,29 @@ function SCGameMode:InitGameMode()
 	
 	Pets:Init()
 	mode:SetThink( "OnThink", self, 0.2 )
-	self.ItemKVs = LoadKeyValues("scripts/npc/npc_items_custom.txt")
-  	self.AbilityKVs = SCGameMode:DeleteTrashFromTable(LoadKeyValues("scripts/npc/npc_abilities_custom.txt"))
-	self.UnitsKVs = SCGameMode:DeleteTrashFromTable(LoadKeyValues("scripts/npc/npc_units_custom.txt"))
+	-- [SCD-FIX] LoadKeyValues обёрнуты: падение любого из них раньше обрывало InitGameMode,
+	-- из-за чего таблица kvs (цены в тултипах) не создавалась
+	local function LoadKVSafe(path)
+		local ok, res = pcall(LoadKeyValues, path)
+		if not ok or res == nil then
+			print("[SCD-DIAG] LoadKeyValues FAILED for " .. path .. ": " .. tostring(res))
+			return {}
+		end
+		return res
+	end
+	self.ItemKVs = LoadKVSafe("scripts/npc/npc_items_custom.txt")
+  	self.AbilityKVs = SCGameMode:DeleteTrashFromTable(LoadKVSafe("scripts/npc/npc_abilities_custom.txt"))
+	self.UnitsKVs = SCGameMode:DeleteTrashFromTable(LoadKVSafe("scripts/npc/npc_units_custom.txt"))
+	print("[SCD-DIAG] KV loaded: abilities=" .. (self.AbilityKVs and SCGameMode:TableCount(self.AbilityKVs) or "nil") ..
+		" units=" .. (self.UnitsKVs and SCGameMode:TableCount(self.UnitsKVs) or "nil") ..
+		" items=" .. (self.ItemKVs and SCGameMode:TableCount(self.ItemKVs) or "nil"))
+end
+
+-- [SCD-FIX] утилита для диагностики размера таблиц
+function SCGameMode:TableCount(t)
+	local n = 0
+	for _ in pairs(t) do n = n + 1 end
+	return n
 end
 
 function SCGameMode:DeleteTrashFromTable(table)
@@ -1082,7 +1102,19 @@ function SCGameMode:OnGameRulesStateChange(keys)
 			storereq:SetHTTPRequestGetOrPostParameter("id"..i, tostring(PlayerResource:GetSteamAccountID(i-1)))
 		end
         storereq:Send(function(result)
-           Store:PlayersStoreLoaded(result.Body)
+           -- [SCD-FIX] ответ сети не роняет лобди
+           local ok, err = pcall(function()
+               if result and type(result.Body) == "string" and result.Body ~= "" then
+                   Store:PlayersStoreLoaded(result.Body)
+               else
+                   print("[SCD-DIAG] store.php empty body or network fail, StatusCode=" .. tostring(result and result.StatusCode))
+                   Store:PlayersStoreFallback("network")
+               end
+           end)
+           if not ok then
+               print("[SCD-DIAG] store response handler failed: " .. tostring(err))
+               Store:PlayersStoreFallback("handler error")
+           end
 		end)
 		-- BattlePasses:LoadPlayers()
 		-- Chests:LoadPlayers()
@@ -1123,10 +1155,14 @@ function SCGameMode:OnGameRulesStateChange(keys)
 			end
 			req:Send(function(result)
 				-- print(result.Body)
-				if result.Body ~= "" then
-					local loctable = json.decode(result.Body)
-					_G.ratingstable["ratings"] = loctable
-					SCGameMode:UpdateRatingNetTable()
+				if result and type(result.Body) == "string" and result.Body ~= "" then
+					local ok, loctable = pcall(json.decode, result.Body)
+					if ok and loctable ~= nil then
+						_G.ratingstable["ratings"] = loctable
+						SCGameMode:UpdateRatingNetTable()
+					else
+						print("[SCD-DIAG] getrating: bad json")
+					end
 				end
 			end)
 			
@@ -1135,9 +1171,13 @@ function SCGameMode:OnGameRulesStateChange(keys)
 			req:SetHTTPRequestGetOrPostParameter("mode", "getratingtop")
 			req:Send(function(result)
 				-- print(result.Body)
-				if result.Body ~= "" then
-					local loctable = json.decode(result.Body)
-					CustomNetTables:SetTableValue("Rating","top",loctable)
+				if result and type(result.Body) == "string" and result.Body ~= "" then
+					local ok, loctable = pcall(json.decode, result.Body)
+					if ok and loctable ~= nil then
+						CustomNetTables:SetTableValue("Rating","top",loctable)
+					else
+						print("[SCD-DIAG] getratingtop: bad json")
+					end
 				end
 			end)
 		end
@@ -1189,14 +1229,20 @@ function SCGameMode:OnGameRulesStateChange(keys)
 end
 
 function SCGameMode:OnAllPlayersLoaded()
-	PlayerTables:CreateTable("kvs", 
-		{
-			items = self.ItemKVs,
-			units = self.UnitsKVs,
-			races = _G.racetable,
-			abilities = self.AbilityKVs
-		}
-	, true)
+	-- [SCD-FIX] защита: падение создания kvs-таблицы больше не роняет фазу подключения
+	local ok, err = pcall(function()
+		PlayerTables:CreateTable("kvs", 
+			{
+				items = self.ItemKVs,
+				units = self.UnitsKVs,
+				races = _G.racetable,
+				abilities = self.AbilityKVs
+			}
+		, true)
+	end)
+	if not ok then
+		print("[SCD-DIAG] OnAllPlayersLoaded: CreateTable kvs FAILED: " .. tostring(err))
+	end
 end
 
 function SCGameMode:OnTimerThink()

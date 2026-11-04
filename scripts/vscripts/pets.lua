@@ -241,8 +241,8 @@ end
 -- end
 
 function Pets:SetCameraPos(data)
-	-- DeepPrintTable(data)
-	if data.PlayerID and data.pos and data.pos["0"] and data.pos["1"] and data.pos["2"] then
-		Pets.camerasPos[data.PlayerID] = Vector(data.pos["0"],data.pos["1"],data.pos["2"])
+	-- [SCD-FIX] событие задекларировано в custom.gameevents (pos_0/1/2) - спам движка убран
+	if data.PlayerID and data.pos_0 and data.pos_1 and data.pos_2 then
+		Pets.camerasPos[data.PlayerID] = Vector(data.pos_0, data.pos_1, data.pos_2)
 	end
 end
