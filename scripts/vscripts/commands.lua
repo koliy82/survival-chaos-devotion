@@ -56,6 +56,20 @@ end
 -- сработал (оно печатается в лог один раз — чтобы мы знали правду, а не гадали).
 _G.SCD_ResolveCallerID = _G.SCD_ResolveCallerID or function(client)
 	if client == nil then
+		-- [SCD-FIX] Вызывающего объекта может не быть вовсе: команду дёргают не из
+		-- консоли, а из кода (таймер, обработчик события). Раньше здесь был
+		-- немедленный отказ, из-за которого одиночный фоллбек внизу недостижим.
+		-- Гадать нечего: если в матче ровно один игрок - вызвавший однозначен.
+		local okN, n = pcall(function()
+			return PlayerResource:GetPlayerCount()
+		end)
+		if okN and n == 1 then
+			for i = 0, 23 do
+				if PlayerResource:IsValidPlayerID(i) then
+					return i, "nil client -> single-player fallback"
+				end
+			end
+		end
 		return nil, "client is nil"
 	end
 	if type(client) == "number" then
@@ -961,7 +975,17 @@ function Commands:SCDAddBotImpl(...)
 		if info.race == nil then
 			raceTries = raceTries + 1
 			local okRace, errRace = pcall(function()
-				SCGameMode:SelectRace({ PlayerID = botid, race = race })
+				-- [SCD-FIX] Глобальный SCGameMode из контекста commands.lua виден как nil:
+				-- живой прогон дал "attempt to index global 'SCGameMode' (a nil value)"
+				-- на обеих попытках, при этом внутри addon_game_mode.lua тот же вызов
+				-- работает (строки 1295, 949, 952). Рабочий путь - ЭКЗЕМПЛЯР
+				-- GameRules.AddonTemplate, создаваемый в addon_game_mode.lua:382; ровно
+				-- так вызывает SelectRace авторская команда select_race (строка 343).
+				local mode = GameRules.AddonTemplate or SCGameMode
+				if mode == nil then
+					error("neither GameRules.AddonTemplate nor SCGameMode is available")
+				end
+				mode:SelectRace({ PlayerID = botid, race = race })
 			end)
 			if not okRace then
 				print("[SCD-OFFLINE] scd_add_bot: SelectRace attempt " .. tostring(raceTries)
