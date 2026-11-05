@@ -4984,32 +4984,79 @@ function ForAllSpecDamageEnemies(event)
     local part = "particles/econ/items/earthshaker/egteam_set/hero_earthshaker_egset/earthshaker_echoslam_start_egset.vpcf"
     local casterid = caster:GetPlayerOwnerID()
 	local damage = ability:GetLevelSpecialValueFor("damage", (ability:GetLevel() - 1))
-    
-    local level = event.Level
-    
-    if _G.playersinfo[casterid].ancient and _G.playersinfo[casterid].ancient:GetLevel() >= level then
+
+    -- [SCD-FIX] «Мини взрыв» не наносил урон. Единственное отличие этой функции от
+    -- рабочих ультимейтов (ultimate_abilities.lua:268-294) - гейт по уровню замка,
+    -- поэтому причина в нём или в падении до него. Три правки:
+    --  1) tonumber(event.Level): KV-подстановка "%need_level" теоретически может
+    --     прийти строкой, тогда "число >= строка" бросает ошибку Lua и функция
+    --     умирает ДО урона и ДО возврата золота. Приведение делает гейт безопасным
+    --     при любом типе. Косвенное доказательство, что обычно приходит число:
+    --     hero_creater.lua сравнивает caster:GetLevel() >= event.barrack_level с
+    --     литералом "2" из KV, и спавн героев в игре работает.
+    --  2) guard'ы на nil: _G.playersinfo[casterid], .baracks и .towers у чужих
+    --     игроков индексировались без проверок (в отличие от .ancient). Падение в
+    --     середине цикла означало бы, что урон не наносится НИКОМУ.
+    --  3) возврат золота через _G.SCD_RefundAbilityGold, чтобы ещё и вычитать
+    --     goldspend (иначе «Счёт» в топ-баре рос при несостоявшейся покупке).
+    local level = tonumber(event.Level)
+    local casterinfo = (casterid ~= nil and _G.playersinfo) and _G.playersinfo[casterid] or nil
+    local caster_ancient = casterinfo and casterinfo.ancient or nil
+    local castle_level = caster_ancient and caster_ancient:GetLevel() or nil
+
+    -- Диагностика: одна строка на каст. По ней в живом прогоне видно ВСЕ входы гейта
+    -- и его результат, то есть причину можно установить за один каст.
+    print("[SCD-DIAG] mini_boom: casterid=" .. tostring(casterid)
+            .. " info=" .. tostring(casterinfo ~= nil)
+            .. " ancient=" .. tostring(caster_ancient ~= nil)
+            .. " castle_level=" .. tostring(castle_level)
+            .. " need_level=" .. tostring(event.Level) .. "(" .. type(event.Level) .. ")"
+            .. " damage=" .. tostring(damage))
+
+    if caster_ancient and castle_level and level and castle_level >= level then
+        local enemies = 0
+        local targets = 0
         for id, _ in pairs(_G.playersinfo) do
-            if PlayerResource:GetTeam(id) ~= PlayerResource:GetTeam(casterid) then
-                if _G.playersinfo[id].ancient then
-                    local partindx = ParticleManager:CreateParticle( part, PATTACH_ABSORIGIN, caster )
-                    ParticleManager:SetParticleControl(partindx, 0, _G.playersinfo[id].ancient:GetAbsOrigin())
-                    ParticleManager:SetParticleControl(partindx, 1, Vector(1000,0,0))
-                    ApplyCustomDamage(_G.playersinfo[id].ancient, caster, damage, 6, ability)
-                end
-                for k, v in pairs(_G.playersinfo[id].baracks) do
-                    -- partindx = ParticleManager:CreateParticle( part, PATTACH_ABSORIGIN, caster )
-                    -- ParticleManager:SetParticleControl(partindx, 0, v:GetAbsOrigin())
-                    ApplyCustomDamage(v, caster, damage, 6, ability)
-                end
-                for k, v in pairs(_G.playersinfo[id].towers) do
-                    -- partindx = ParticleManager:CreateParticle( part, PATTACH_ABSORIGIN, caster )
-                    -- ParticleManager:SetParticleControl(partindx, 0, v:GetAbsOrigin())
-                    ApplyCustomDamage(v, caster, damage, 6, ability)
+            if PlayerResource:IsValidPlayerID(id)
+                    and PlayerResource:GetTeam(id) ~= PlayerResource:GetTeam(casterid) then
+                local info = _G.playersinfo[id]
+                if info then
+                    enemies = enemies + 1
+                    if info.ancient then
+                        local partindx = ParticleManager:CreateParticle( part, PATTACH_ABSORIGIN, caster )
+                        ParticleManager:SetParticleControl(partindx, 0, info.ancient:GetAbsOrigin())
+                        ParticleManager:SetParticleControl(partindx, 1, Vector(1000,0,0))
+                        ApplyCustomDamage(info.ancient, caster, damage, 6, ability)
+                        targets = targets + 1
+                    end
+                    if info.baracks then
+                        for k, v in pairs(info.baracks) do
+                            -- partindx = ParticleManager:CreateParticle( part, PATTACH_ABSORIGIN, caster )
+                            -- ParticleManager:SetParticleControl(partindx, 0, v:GetAbsOrigin())
+                            ApplyCustomDamage(v, caster, damage, 6, ability)
+                            targets = targets + 1
+                        end
+                    end
+                    if info.towers then
+                        for k, v in pairs(info.towers) do
+                            -- partindx = ParticleManager:CreateParticle( part, PATTACH_ABSORIGIN, caster )
+                            -- ParticleManager:SetParticleControl(partindx, 0, v:GetAbsOrigin())
+                            ApplyCustomDamage(v, caster, damage, 6, ability)
+                            targets = targets + 1
+                        end
+                    end
                 end
             end
         end
+        print("[SCD-DIAG] mini_boom: gate PASSED, enemies=" .. tostring(enemies)
+                .. " targets=" .. tostring(targets))
     else
-        PlayerResource:ModifyGold(casterid, ability:GetGoldCost(ability:GetLevel()-1), false, 0)
+        -- [SCD-FIX] возврат за несостоявшийся каст: вернуть золото И вычесть goldspend
+        local refund = ability:GetGoldCost(ability:GetLevel()-1)
+        _G.SCD_RefundAbilityGold(ability, casterid, refund)
+        print("[SCD-DIAG] mini_boom: gate NOT passed (castle_level="
+                .. tostring(castle_level) .. " need=" .. tostring(level)
+                .. "), refunded " .. tostring(refund))
     end
 end
 
@@ -5023,6 +5070,16 @@ function CheckCastle(event)
     if _G.playersinfo[id].ancient and _G.playersinfo[id].ancient:GetLevel() >= level then
     else
         caster:Stop()
+        -- [SCD-DIAG] только в фейл-ветке, чтобы не спамить: показывает, что второй
+        -- RunScript вообще выполнился (важно для «Мини взрыва», где ForAllSpec…
+        -- идёт ПЕРЕД CheckCastle), и печатает тип level - это независимая проверка,
+        -- что KV-подстановка "%need_level" приходит числом, а не строкой.
+        print("[SCD-DIAG] CheckCastle fail: ability=" .. tostring(event.ability and event.ability:GetAbilityName())
+                .. " player=" .. tostring(id)
+                .. " ancient=" .. tostring(_G.playersinfo[id] and _G.playersinfo[id].ancient ~= nil)
+                .. " castle_level=" .. tostring(_G.playersinfo[id] and _G.playersinfo[id].ancient
+                        and _G.playersinfo[id].ancient:GetLevel())
+                .. " need_level=" .. tostring(level) .. "(" .. type(level) .. ")")
         if level == 2 then
             CustomGameEventManager:Send_ServerToPlayer(caster:GetPlayerOwner(), "display_custom_error", { message = "#need_ancient_level_2" })
         elseif level == 3 then
