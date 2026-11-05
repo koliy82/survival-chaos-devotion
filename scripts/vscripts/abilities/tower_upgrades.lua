@@ -9,9 +9,20 @@ local function RefundTowerCast(ability, id)
     end
     if cost and cost > 0 then
         ability.scd_refunded = true
-        PlayerResource:ModifyGold(id, cost, false, DOTA_ModifyGold_Unspecified)
+        -- [SCD-FIX] возврат через общий помощник (utils.lua): он возвращает золото И вычитает
+        -- goldspend. Раньше здесь был только ModifyGold, из-за чего "Счёт"
+        -- (goldspend + GetGold) содержал возвращённую сумму дважды - золото вернулось,
+        -- а goldspend остался увеличенным. Сумма возврата не изменилась.
+        local stats = nil
+        if _G.playerstats ~= nil then
+            stats = _G.playerstats[id]
+        end
+        local goldspend_before = stats and stats.goldspend
+        local refunded = _G.SCD_RefundAbilityGold(ability, id, cost)
         print("[SCD-DIAG] tower refund: " .. ability:GetAbilityName() .. " lvl=" .. lvl ..
-            " cost=" .. tostring(cost) .. " pid=" .. id)
+            " cost=" .. tostring(cost) .. " refunded=" .. tostring(refunded) ..
+            " goldspend " .. tostring(goldspend_before) .. " -> " .. tostring(stats and stats.goldspend) ..
+            " pid=" .. id)
     end
 end
 

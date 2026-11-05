@@ -3,6 +3,12 @@
 *.scdbak
 *.tmp
 
+# артефакты Tools-режима Dota (создаются в корне аддона при запуске с -tools)
+tools_asset_info.bin
+tools_thumbnail_cache.sqlite3
+tools_thumbnail_cache.sqlite3-shm
+tools_thumbnail_cache.sqlite3-wal
+
 
 AGENTS.md
 _dsh/
