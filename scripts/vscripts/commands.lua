@@ -187,6 +187,9 @@ function Commands:Init()
     -- без SteamID-гейта, применяется строго к вызвавшему игроку. Существующие dev-команды
     -- автора (run_code / kill_unit / win / get_neutrals / ...) не открываются и не меняются.
     Convars:RegisterCommand( "scd_topbar_test", Dynamic_Wrap(Commands, 'SCDTopBarTest'), "SCD offline: change own base state to verify top bar", 0 )
+    -- [SCD-OFFLINE] бот в матч для одиночного тестирования (топ-бар на 2+ игрока, способности
+    -- по вражеским постройкам). Гейт тот же: автономная сборка + _G.SCD_IsDevPlayer.
+    Convars:RegisterCommand( "scd_add_bot", Dynamic_Wrap(Commands, 'SCDAddBot'), "SCD offline: add a bot player with a full base to a running match", 0 )
     
 	CustomGameEventManager:RegisterListener("StartProfiler", Dynamic_Wrap(Commands, 'UIStartProfiler'))
 	CustomGameEventManager:RegisterListener("StopProfiler", Dynamic_Wrap(Commands, 'UIStopProfiler'))
@@ -741,4 +744,258 @@ function Commands:SCDTopBarTestImpl(...)
 
 	print("[SCD-OFFLINE] scd_topbar_test: unknown mode " .. tostring(mode))
 	usage()
+end
+
+-- [SCD-OFFLINE] ==============================================================================
+-- Добавление бота в идущий матч. Нужно для одиночного тестирования: без второго игрока
+-- топ-бар показывает один слот, а способности по вражеским постройкам («Мини взрыв» бьёт по
+-- _G.playersinfo игроков ДРУГОЙ команды) не имеют целей физически.
+--
+-- Синтаксис (консоль Dota):
+--   scd_add_bot            - бот на свободную команду, раса случайная
+--   scd_add_bot <race>     - то же, но с указанной расой (1..19)
+--
+-- Как устроено:
+--   1. GameRules:AddBotPlayerWithEntityScript(hero, name, team, script, false) - штатный API
+--      движка (строка и описание найдены в game/dota/bin/win64/server.dll: "Spawn a bot player
+--      of the passed hero name, player name, and team"; в стабах dota_functions.lua:5213).
+--      Консольной команды dota_create_fakeplayer в этой сборке НЕТ: во всех бинарниках
+--      (client.dll/server.dll/host.dll/engine2.dll) есть только поле fakeplayer в структуре
+--      player info, самого имени команды нет. GameRules:BotPopulate() не подходит - он
+--      работает только в cheat mode.
+--   2. Дальше бот идёт по ОБЫЧНОМУ пути: движок спавнит ему форс-героя
+--      (mode:SetCustomGameForceHero("npc_dota_hero_wisp")), на npc_spawned срабатывает
+--      SCGameMode:OnNPCSpawned, который создаёт ancient / 3 барака / 4 башни / spec и
+--      _G.playerstats[id]. Отдельно база не склеивается.
+--   3. Если игрок появился, а героя движок не заспавнил (база не создалась), форс-герой
+--      создаётся сам - через тот же OnNPCSpawned.
+--   4. Когда база есть, раса задаётся штатным SCGameMode:SelectRace.
+-- Движок создаёт игрока асинхронно, поэтому результат проверяется таймером (0.5 с x 40 = 20 с)
+-- и печатается одной итоговой строкой.
+function Commands:SCDAddBot(...)
+	local argv = { ... }
+	local argc = select("#", ...)
+	local ok, err = pcall(function()
+		return Commands:SCDAddBotImpl(unpack(argv, 1, argc))
+	end)
+	if not ok then
+		print("[SCD-OFFLINE] scd_add_bot FAILED: " .. tostring(err))
+	end
+end
+
+function Commands:SCDAddBotImpl(...)
+	if not _G.SCD_OFFLINE then
+		print("[SCD-OFFLINE] scd_add_bot: available only in the offline build")
+		return
+	end
+
+	-- аргументы из консоли приходят строками; часть сборок движка передаёт первым аргументом
+	-- имя команды - отсекаем его, чтобы раса не съехала
+	local args = { ... }
+	if args[1] == "scd_add_bot" then
+		table.remove(args, 1)
+	end
+	local raceArg = tonumber(args[1])
+
+	-- вызвавший игрок: GetCommandClient() в этой сборке возвращает объект без GetPlayerID,
+	-- поэтому резолвим общим _G.SCD_ResolveCallerID
+	local cmdPlayer
+	if IsInToolsMode() then
+		cmdPlayer = PlayerResource:GetPlayer(0)
+	else
+		cmdPlayer = Convars:GetCommandClient()
+	end
+	local id, how = _G.SCD_ResolveCallerID(cmdPlayer)
+	if id == nil then
+		print("[SCD-OFFLINE] scd_add_bot: cannot resolve the calling player (" .. tostring(how) .. ")")
+		return
+	end
+	if not _G.SCD_IsDevPlayer(id) then
+		print("[SCD-OFFLINE] scd_add_bot: access denied for player " .. tostring(id)
+			.. " (add their accountID to _G.SCD_DEV_ACCOUNT_IDS in scripts/vscripts/commands.lua)")
+		return
+	end
+	if _G.playersinfo == nil or _G.playersinfo[id] == nil then
+		print("[SCD-OFFLINE] scd_add_bot: run it after the game has started (player " .. tostring(id) .. " has no base yet)")
+		return
+	end
+
+	-- раса: аргумент или случайная из доступных
+	local raceCount = _G.race_count or 19
+	local race = raceArg
+	if race == nil then
+		race = RandomInt(1, _G.free_race_count or raceCount)
+	end
+	race = math.floor(race)
+	if race < 1 or race > raceCount then
+		print("[SCD-OFFLINE] scd_add_bot: race must be 1.." .. tostring(raceCount) .. ", got " .. tostring(args[1]))
+		return
+	end
+
+	-- снимок существующих игроков: по нему найдём того, кого добавит движок
+	local before = {}
+	for i = 0, 23 do
+		if PlayerResource:IsValidPlayerID(i) then
+			before[i] = true
+		end
+	end
+
+	-- свободная команда. В duos живут только GOODGUYS/BADGUYS по 2 игрока (_G.duos_spawn
+	-- инициализирован только для них, SetCustomGameTeamMaxPlayers тоже), иначе 4 команды по
+	-- одному. Команда вызвавшего не годится: бот нужен как ЦЕЛЬ на другой стороне.
+	local callerTeam = PlayerResource:GetTeam(id)
+	local capacity = _G.duos and 2 or 1
+	local candidates
+	if _G.duos then
+		candidates = { DOTA_TEAM_GOODGUYS, DOTA_TEAM_BADGUYS }
+	else
+		candidates = { DOTA_TEAM_GOODGUYS, DOTA_TEAM_BADGUYS, DOTA_TEAM_CUSTOM_1, DOTA_TEAM_CUSTOM_2 }
+	end
+	local team = nil
+	local occupancy = {}
+	for _, t in ipairs(candidates) do
+		local cnt = 0
+		for i = 0, 23 do
+			if before[i] and PlayerResource:GetTeam(i) == t then
+				cnt = cnt + 1
+			end
+		end
+		occupancy[#occupancy + 1] = tostring(t) .. "=" .. cnt .. "/" .. capacity
+		if team == nil and t ~= callerTeam and cnt < capacity then
+			team = t
+		end
+	end
+	if team == nil then
+		print("[SCD-OFFLINE] scd_add_bot: no free team (caller team " .. tostring(callerTeam)
+			.. ", occupancy " .. table.concat(occupancy, " ") .. ")")
+		return
+	end
+
+	-- 1) просим движок добавить бота
+	local heroName = "npc_dota_hero_wisp" -- тот же герой, что форсит SetCustomGameForceHero
+	local okAdd, errAdd = pcall(function()
+		return GameRules:AddBotPlayerWithEntityScript(heroName, "SCD_Bot", team, "", false)
+	end)
+	if not okAdd then
+		print("[SCD-OFFLINE] scd_add_bot: AddBotPlayerWithEntityScript FAILED: " .. tostring(errAdd))
+		return
+	end
+	print("[SCD-OFFLINE] scd_add_bot: bot requested (team " .. tostring(team) .. ", race " .. tostring(race)
+		.. "), waiting for the engine...")
+
+	-- 2) ждём игрока, его базу, затем назначаем расу
+	Commands.scd_bots = Commands.scd_bots or {}
+	local attempts = 0
+	local maxAttempts = 40 -- 40 * 0.5 с = 20 с
+	local heroSpawned = false
+	local spawnedHero = nil
+	local raceTries = 0
+	Timers:CreateTimer(0.5, function()
+		attempts = attempts + 1
+
+		local botid = nil
+		for i = 0, 23 do
+			if before[i] == nil and i ~= id and PlayerResource:IsValidPlayerID(i) then
+				botid = i
+				break
+			end
+		end
+		if botid == nil then
+			if attempts >= maxAttempts then
+				print("[SCD-OFFLINE] scd_add_bot: no new player appeared in 20 s - the engine refused"
+					.. " to add a bot to a running match (see the report for the fallback plan)")
+				return nil
+			end
+			return 0.5
+		end
+
+		local botTeam = PlayerResource:GetTeam(botid)
+		local info = _G.playersinfo[botid]
+		if info == nil then
+			-- игрок есть, базы нет: значит герой не заспавнился, а база создаётся именно по
+			-- npc_spawned реального героя (SCGameMode:OnNPCSpawned). Создаём форс-героя сами -
+			-- путь тот же, и он сам же его убьёт, как у обычных игроков.
+			if not heroSpawned and attempts >= 3 then
+				heroSpawned = true
+				local botPlayer = PlayerResource:GetPlayer(botid)
+				local hero = PlayerResource:GetSelectedHeroEntity(botid)
+				if hero == nil and botPlayer ~= nil then
+					local okSpawn, errSpawn = pcall(function()
+						spawnedHero = CreateUnitByName(heroName, Vector(0, 0, 0), true, botPlayer, botPlayer, botTeam)
+					end)
+					if okSpawn then
+						print("[SCD-OFFLINE] scd_add_bot: engine did not spawn the bot hero - created "
+							.. heroName .. " for pid=" .. tostring(botid) .. " so OnNPCSpawned builds its base")
+					else
+						print("[SCD-OFFLINE] scd_add_bot: CreateUnitByName FAILED: " .. tostring(errSpawn))
+					end
+				elseif hero == nil then
+					print("[SCD-OFFLINE] scd_add_bot: PlayerResource:GetPlayer(" .. tostring(botid)
+						.. ") is nil - cannot spawn the bot hero")
+				end
+			end
+			if attempts >= maxAttempts then
+				-- не оставляем в мире stray-героя, если база так и не создалась
+				if spawnedHero ~= nil and not spawnedHero:IsNull() and spawnedHero:IsAlive() then
+					spawnedHero:ForceKill(false)
+				end
+				print("[SCD-OFFLINE] scd_add_bot: bot pid=" .. tostring(botid) .. " exists (team "
+					.. tostring(botTeam) .. ") but its base was NOT created in 20 s -"
+					.. " SCGameMode:OnNPCSpawned did not run for it")
+				return nil
+			end
+			return 0.5
+		end
+
+		-- gpt выставляется циклом в фазе GAME_IN_PROGRESS, который уже отработал. Без него
+		-- OnTimerThink (каждые 10 с) сделал бы ModifyGold(id, nil), а в turbo - nil * 2,
+		-- то есть ошибка Lua каждые 10 секунд до конца матча.
+		if type(info.gpt) ~= "number" then
+			info.gpt = 60
+		end
+
+		-- раса - штатным путём (иначе race = 0 и топ-бар показывает placeholder).
+		-- SelectRace внутри шлёт клиентские события через PlayerResource:GetPlayer(id);
+		-- если у бота в момент вызова ещё нет объекта игрока, вызов упадёт - поэтому pcall
+		-- и ровно одна повторная попытка на следующем тике.
+		if info.race == nil then
+			raceTries = raceTries + 1
+			local okRace, errRace = pcall(function()
+				SCGameMode:SelectRace({ PlayerID = botid, race = race })
+			end)
+			if not okRace then
+				print("[SCD-OFFLINE] scd_add_bot: SelectRace attempt " .. tostring(raceTries)
+					.. " FAILED: " .. tostring(errRace))
+			end
+			if info.race == nil and raceTries < 2 and attempts < maxAttempts then
+				return 0.5
+			end
+		end
+
+		local barracks = 0
+		for _ in pairs(info.baracks or {}) do
+			barracks = barracks + 1
+		end
+		local barracksTotal = 0
+		for _ in pairs(info.all_baracks or {}) do
+			barracksTotal = barracksTotal + 1
+		end
+		Commands.scd_bots[botid] = { team = botTeam, race = info.race }
+		if botTeam == callerTeam then
+			-- Переназначать команду через SetCustomTeamAssignment уже ПОСЛЕ создания базы
+			-- нельзя: здания созданы на команде, которая была в момент npc_spawned, и они
+			-- останутся на старой. Поэтому только предупреждаем.
+			print("[SCD-OFFLINE] scd_add_bot: WARNING - the bot landed on the caller's team "
+				.. tostring(botTeam) .. ", so enemy-building abilities will not target it")
+		end
+		print("[SCD-OFFLINE] scd_add_bot: bot ready pid=" .. tostring(botid)
+			.. " team=" .. tostring(botTeam)
+			.. " race=" .. tostring(info.race)
+			.. " base_pos=" .. tostring(info.base_pos)
+			.. " barracks=" .. tostring(barracks) .. "/" .. tostring(barracksTotal)
+			.. " ancient=" .. tostring(info.ancient ~= nil and not info.ancient:IsNull())
+			.. " gpt=" .. tostring(info.gpt)
+			.. " (top bar slot should appear within 0.2 s)")
+		return nil
+	end)
 end

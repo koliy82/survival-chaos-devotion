@@ -1009,6 +1009,24 @@ function SCGameMode:OnNPCSpawned(keys)
 			local id = npc:GetPlayerID()
 			local team = npc:GetTeam()
 
+			-- [SCD-FIX] защита от команды вне игрового набора. Актуально для dev-команды
+			-- scd_add_bot: движку никто не гарантирует назначить боту одну из четырёх
+			-- игровых команд. Ниже идут _G.duos_spawn[team] + 1, colors[team][1] и
+			-- Entities:FindByName(nil, "base_1_"..base_pos) - все три падают на nil,
+			-- и обработчик npc_spawned умер бы с ошибкой Lua (база не создалась бы всё равно).
+			local allowed_teams = {}
+			allowed_teams[DOTA_TEAM_GOODGUYS] = true
+			allowed_teams[DOTA_TEAM_BADGUYS] = true
+			if not _G.duos then
+				allowed_teams[DOTA_TEAM_CUSTOM_1] = true
+				allowed_teams[DOTA_TEAM_CUSTOM_2] = true
+			end
+			if allowed_teams[team] ~= true then
+				print("[SCD-DIAG] OnNPCSpawned: unexpected team " .. tostring(team) .. " for player "
+					.. tostring(id) .. " - base is not created")
+				return
+			end
+
 			local base_pos = 0
 			if _G.duos then
 				_G.duos_spawn[team] = _G.duos_spawn[team] + 1
@@ -1023,6 +1041,16 @@ function SCGameMode:OnNPCSpawned(keys)
 				team_to_num[DOTA_TEAM_CUSTOM_1] = 3
 				team_to_num[DOTA_TEAM_CUSTOM_2] = 4
 				base_pos = team_to_num[team]
+			end
+
+			-- [SCD-FIX] в duos base_pos берётся как duos_spawn[team][номер_спавна]: при
+			-- третьем герое на той же команде индекс выходит за {1,3}/{2,4} и base_pos = nil,
+			-- а следом падает конкатенация "base_1_"..base_pos.
+			if type(base_pos) ~= "number" or base_pos < 1 or base_pos > 4 then
+				print("[SCD-DIAG] OnNPCSpawned: cannot resolve base_pos for player " .. tostring(id)
+					.. " (team " .. tostring(team) .. ", base_pos=" .. tostring(base_pos)
+					.. ") - base is not created")
+				return
 			end
 
 			local colors = {}
