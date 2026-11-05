@@ -1,3 +1,29 @@
+-- [SCD-OFFLINE] ======================= АВТОНОМНЫЙ РЕЖИМ =======================
+-- Рейтинг-сервер dotascd.ru заброшен и недоступен, поэтому игра работает полностью
+-- автономно. Флаги задаются ЗДЕСЬ - до require(...) и до Activate(), то есть раньше
+-- любого HTTP-запроса. Точки сети не удалены, а закрыты флагом: правка обратима
+-- (достаточно поставить _G.SCD_OFFLINE = false, чтобы вернуть оригинальное поведение).
+--   _G.SCD_OFFLINE              - ни одного запроса наружу, везде локальные фоллбеки;
+--   _G.SCD_RATING_ENABLED       - серверная сторона рейтинга/MMR (net-таблица "Rating")
+--                                 не заполняется и сервером не читается;
+--   _G.SCD_UNLOCK_ALL_COSMETICS - донатерская косметика выдается всем игрокам бесплатно.
+_G.SCD_OFFLINE = true
+_G.SCD_RATING_ENABLED = false
+_G.SCD_UNLOCK_ALL_COSMETICS = true
+
+-- [SCD-OFFLINE] диагностика offline-веток. Одно и то же сообщение печатается ОДИН раз
+-- за матч: точки вызываются из колбэков/таймеров, поэтому обычный print дал бы спам.
+_G.SCD_OfflineNotes = _G.SCD_OfflineNotes or {}
+_G.SCD_OfflineNote = _G.SCD_OfflineNote or function(msg)
+	msg = tostring(msg)
+	if _G.SCD_OfflineNotes[msg] then
+		return
+	end
+	_G.SCD_OfflineNotes[msg] = true
+	print("[SCD-OFFLINE] " .. msg)
+end
+-- [SCD-OFFLINE] ==================================================================
+
 if not IsInToolsMode() then
 	-- debug.oldTraceback = debug.oldTraceback or debug.traceback
 	-- debug.traceback = function()
@@ -365,10 +391,16 @@ function SCGameMode:InitGameMode()
 	_G.duos = GetMapName() == "duos"
 	_G.turbo = GetMapName() == "turbo"
 	_G.normal = _G.duos == false and _G.turbo == false
-	if rating_in_normal then
-		_G.rating = true
+	-- [SCD-OFFLINE] серверная сторона рейтинга отключена вместе с сервером. _G.rating
+	-- остается определенным (на него ссылается SCGameMode:Stats), но всегда false.
+	if _G.SCD_RATING_ENABLED then
+		if rating_in_normal then
+			_G.rating = true
+		else
+			_G.rating = GetMapName() ~= "normal"
+		end
 	else
-		_G.rating = GetMapName() ~= "normal"
+		_G.rating = false
 	end
 	_G.polygon = GetMapName() == "polygon"
 	
@@ -514,7 +546,12 @@ function SCGameMode:InitGameMode()
 	_G.ratingstable = {}
 	_G.ratingstable["settings"] = {}
 	_G.ratingstable["ratings"] = {}
-	CustomNetTables:SetTableValue("Rating","stats",{enable = _G.rating})
+	-- [SCD-OFFLINE] net-таблица "Rating" больше не заполняется (MMR убран из UI).
+	-- Пустая структура _G.ratingstable сохранена: на нее есть обращения в коде ниже,
+	-- и они не должны получить nil-индексацию.
+	if _G.SCD_RATING_ENABLED then
+		CustomNetTables:SetTableValue("Rating","stats",{enable = _G.rating})
+	end
 
 	_G.bonus_ids = {
 		[0] = {3,5,7,8,9,12,14},
@@ -775,6 +812,13 @@ function SCGameMode:OnPlayerChat(keys)
 end
 
 function SCGameMode:Stats(winner)
+	-- [SCD-OFFLINE] отчет о матче уходил только на data.php (параметр rating - туда же).
+	-- Колбэк ничего не инициализирует, лишь печатает тело ответа, поэтому фоллбек не нужен:
+	-- запрос просто не делается. Вызов SCGameMode:Stats(winner) в _G:Defeat остается.
+	if _G.SCD_OFFLINE then
+		SCD_OfflineNote("Stats: data.php match report skipped")
+		return
+	end
     local plc = PlayerResource:GetPlayerCount()
 	if not GameRules:IsCheatMode() and GameRules:GetDOTATime(false,false) > 300 and plc == 4 then
         local req = CreateHTTPRequestScriptVM( "GET", "https://dotascd.ru/data.php")
@@ -836,6 +880,13 @@ function SCGameMode:ExecuteOrderFilter(filterTable)
 end
 
 function SCGameMode:RatingSettings(data)
+	-- [SCD-OFFLINE] регистрация слушателя сохранена: settings-панель клиента по-прежнему
+	-- шлет RatingSettings, сервер принимает событие и молча его игнорирует (рейтинг убран).
+	-- Без этого return чекбокс клиента вызывал бы UpdateRatingNetTable, а тот читает
+	-- net-таблицу "Rating", которая теперь не заполняется -> nil-индексация в обработчике.
+	if not _G.SCD_RATING_ENABLED then
+		return
+	end
 	if data.PlayerID and data.checked then
 		_G.ratingstable["settings"][data.PlayerID] = data.checked
 		SCGameMode:UpdateRatingNetTable()
@@ -843,6 +894,12 @@ function SCGameMode:RatingSettings(data)
 end
 
 function SCGameMode:UpdateRatingNetTable()
+	-- [SCD-OFFLINE] net-таблица "Rating" больше не заполняется и сервером не читается.
+	-- Функция оставлена заглушкой: ее вызывают RatingSettings, фаза HERO_SELECTION и
+	-- колбэк getrating. Оригинальное тело сохранено ниже под флагом (правка обратима).
+	if not _G.SCD_RATING_ENABLED then
+		return
+	end
 	-- DeepPrintTable(_G.ratingstable)
 	local table = CustomNetTables:GetTableValue("Rating","stats")
 	table["ratings"] = {}
@@ -1094,28 +1151,36 @@ function SCGameMode:OnGameRulesStateChange(keys)
 		-- end
 		-- CustomNetTables:SetTableValue("Patrons","1",_G.patreons)
 
-		local storereq = CreateHTTPRequestScriptVM( "GET", "https://dotascd.ru/store.php")
-		storereq:SetHTTPRequestGetOrPostParameter("v", GetDedicatedServerKeyV3("1"))
-		local plc = PlayerResource:GetPlayerCount()
-		storereq:SetHTTPRequestGetOrPostParameter("count", tostring(plc))
-		for i=1, plc do
-			storereq:SetHTTPRequestGetOrPostParameter("id"..i, tostring(PlayerResource:GetSteamAccountID(i-1)))
+		-- [SCD-OFFLINE] store.php недоступен. Колбэк этого запроса инициализирует магазин,
+		-- поэтому offline-ветка обязана сразу вызвать фоллбек: иначе Store.Loaded останется
+		-- false, Store:OnPlayerLoaded открутит 90 ретраев по 1 с, а магазин не откроется.
+		if _G.SCD_OFFLINE then
+			SCD_OfflineNote("store.php skipped: local store fallback")
+			Store:PlayersStoreFallback("offline")
+		else
+			local storereq = CreateHTTPRequestScriptVM( "GET", "https://dotascd.ru/store.php")
+			storereq:SetHTTPRequestGetOrPostParameter("v", GetDedicatedServerKeyV3("1"))
+			local plc = PlayerResource:GetPlayerCount()
+			storereq:SetHTTPRequestGetOrPostParameter("count", tostring(plc))
+			for i=1, plc do
+				storereq:SetHTTPRequestGetOrPostParameter("id"..i, tostring(PlayerResource:GetSteamAccountID(i-1)))
+			end
+			storereq:Send(function(result)
+				-- [SCD-FIX] ответ сети не роняет лобди
+				local ok, err = pcall(function()
+					if result and type(result.Body) == "string" and result.Body ~= "" then
+						Store:PlayersStoreLoaded(result.Body)
+					else
+						print("[SCD-DIAG] store.php empty body or network fail, StatusCode=" .. tostring(result and result.StatusCode))
+						Store:PlayersStoreFallback("network")
+					end
+				end)
+				if not ok then
+					print("[SCD-DIAG] store response handler failed: " .. tostring(err))
+					Store:PlayersStoreFallback("handler error")
+				end
+			end)
 		end
-        storereq:Send(function(result)
-           -- [SCD-FIX] ответ сети не роняет лобди
-           local ok, err = pcall(function()
-               if result and type(result.Body) == "string" and result.Body ~= "" then
-                   Store:PlayersStoreLoaded(result.Body)
-               else
-                   print("[SCD-DIAG] store.php empty body or network fail, StatusCode=" .. tostring(result and result.StatusCode))
-                   Store:PlayersStoreFallback("network")
-               end
-           end)
-           if not ok then
-               print("[SCD-DIAG] store response handler failed: " .. tostring(err))
-               Store:PlayersStoreFallback("handler error")
-           end
-		end)
 		-- BattlePasses:LoadPlayers()
 		-- Chests:LoadPlayers()
 	elseif GameRules:State_Get() == DOTA_GAMERULES_STATE_HERO_SELECTION then
@@ -1141,7 +1206,15 @@ function SCGameMode:OnGameRulesStateChange(keys)
 		-- FireGameEvent("control_override_cvar", obj)
 
 		SCGameMode:UpdateRatingNetTable()
-		if not GameRules:IsCheatMode() or IsInToolsMode() then
+		-- [SCD-OFFLINE] блок ниже - целиком серверная сторона рейтинга: getrating/getratingtop
+		-- на data.php плюс net-таблица "Rating". В автономной игре он не выполняется:
+		--   * GetDedicatedServerKeyV3 не вызывается (ключ уходил только параметром "v");
+		--   * GetTableValue("Rating","stats") вернул бы nil (таблица больше не заполняется),
+		--     и table["enable"] уронило бы обработчик смены состояния игры;
+		--   * фоллбек не нужен: колбэки лишь складывали данные рейтинга в _G.ratingstable.
+		if _G.SCD_OFFLINE then
+			SCD_OfflineNote("getrating/getratingtop skipped, Rating net table is not filled")
+		elseif _G.SCD_RATING_ENABLED and (not GameRules:IsCheatMode() or IsInToolsMode()) then
 			if PlayerResource:GetPlayerCount() == 4 then
 				local table = CustomNetTables:GetTableValue("Rating","stats")
 				table["enable"] = _G.rating
@@ -1286,6 +1359,9 @@ function SCGameMode:OnThink()
 	
 	PlayerTables:OnThink()
 
+	-- [SCD-OFFLINE] замена MMR в топ-баре: раса / % HP главного здания / бараки / Поражение
+	SCGameMode:UpdateTopBarNetTable()
+
 	for i=0,PlayerResource:GetPlayerCount()-1 do
 		local state = PlayerResource:GetConnectionState(tonumber(i))
 		if state == 4 and players_connection_state[i] ~= 4 then
@@ -1295,6 +1371,133 @@ function SCGameMode:OnThink()
 	end
 
 	return 0.2
+end
+
+-- [SCD-OFFLINE] ============ net-таблица SCD_TopBar (контракт: _dsh/CONTRACT.md, раздел 1)
+-- Сервер пишет, клиент читает. Ключ - tostring(playerID) для id 0..7, значения целые:
+--   race           id расы 1..19, 0 - раса еще не выбрана;
+--   hp             % HP главного здания 0..100, 0 - если оно снесено (ancient обнуляется
+--                  в SCGameMode:OnEntityKilled);
+--   barracks       сколько бараков живо;
+--   barracks_total сколько бараков всего (изначальные 3 из all_baracks);
+--   defeated       1 - игрок выбыл (_G:Defeat выставил alive = false), иначе 0;
+--   networth       общая ценность игрока: потраченное золото (_G.playerstats[id].goldspend)
+--                  плюс текущий остаток (PlayerResource:GetGold), округленное вниз до шага
+--                  scd_topbar_networth_step. Формула та же, что в Ends_Stats.gold на экране
+--                  окончания матча, поэтому цифры в топ-баре и в финальной статистике
+--                  у одного игрока сходятся.
+-- OnThink тикает 5 раз в секунду, поэтому пишем ТОЛЬКО при реальном изменении строки:
+-- прошлое состояние кешируется по каждому id.
+local scd_topbar_cache = {}
+
+-- [SCD-OFFLINE] шаг округления networth. Золото капает почти непрерывно (gpt-тики каждые
+-- 10 с плюс награды за крипов и героев), а функция вызывается 5 раз в секунду: без
+-- округления net-таблица обновлялась бы каждый тик на каждого игрока и дергала бы
+-- перерисовку UI. В таблицу пишется ровно то же округленное число, которое сравнивается
+-- с кэшем, иначе кэш и таблица разойдутся и публикация станет бесконечной.
+-- Шаг 100 выбран как компромисс: при пассивном доходе (gpt = 60, то есть 6 золота
+-- в секунду) строка в топ-баре меняется примерно раз в 17 с - заметно глазу и не выглядит
+-- залипшей, а в бою публикация идет только когда ценность реально выросла на сотню.
+-- Шаг 50 дал бы вдвое больше публикаций при неразличимой для топ-бара точности, шаг 250 -
+-- обновление раз в ~40 с, что уже похоже на зависшее значение.
+-- Значение НЕ монотонно: при возврате золота (utils.lua:ReturnGold вычитает из goldspend)
+-- оно уменьшается, и топ-бар это честно показывает. Округление вниз корректно и в этом
+-- случае: на мелких колебаниях у границы шага оно дает одно и то же число, а реальный
+-- рефанд меняет его на шаг - публикация происходит только когда изменение заметно.
+-- Трата золота сумму сохраняет (GetGold падает, goldspend растет на ту же величину),
+-- поэтому на покупках net worth не дергается.
+local scd_topbar_networth_step = 100
+
+function SCGameMode:UpdateTopBarNetTable()
+	for id = 0, 7 do
+		-- публикуем строки только для настоящих игроков: пустой слот лобби дал бы
+		-- фантомную строку "0% HP (0/0)" в топ-баре
+		if PlayerResource:IsValidPlayerID(id) and PlayerResource:GetTeam(id) ~= DOTA_TEAM_NOTEAM then
+			-- _G.playersinfo[id] создается не сразу (SCGameMode:OnNPCSpawned) и не для всех id
+			local info = _G.playersinfo[id]
+			local race = 0
+			local hp = 0
+			local barracks = 0
+			local barracks_total = 0
+			local defeated = 0
+			local networth = 0
+
+			if info then
+				race = math.floor(tonumber(info.race) or 0)
+
+				local ancient = info.ancient
+				if ancient and not ancient:IsNull() then
+					local maxhp = ancient:GetMaxHealth()
+					if maxhp and maxhp > 0 then
+						hp = math.floor(ancient:GetHealth() / maxhp * 100 + 0.5)
+						if hp < 0 then
+							hp = 0
+						elseif hp > 100 then
+							hp = 100
+						end
+					end
+				end
+
+				if info.all_baracks then
+					for _ in pairs(info.all_baracks) do
+						barracks_total = barracks_total + 1
+					end
+				end
+				if info.baracks then
+					for _, barrack in pairs(info.baracks) do
+						if barrack and not barrack:IsNull() and barrack:IsAlive() then
+							barracks = barracks + 1
+						end
+					end
+				end
+
+				if info.alive == false then
+					defeated = 1
+				end
+			end
+
+			-- [SCD-OFFLINE] net worth = потраченное золото + текущий остаток. Это проектная
+			-- формула "общей ценности игрока": ровно так считают Ends_Stats.gold (колонка gold
+			-- на экране окончания матча) и all-chat статистика, и в нее входят стартовые
+			-- 2000/4000 золота от SetGold в OnNPCSpawned. Движковый GetTotalEarnedGold стартовый
+			-- капитал не учитывает и дал бы цифру меньше - то есть два разных числа для одного
+			-- игрока на двух экранах, поэтому источник выбран проектный.
+			-- _G.playerstats[id] создается рядом с _G.playersinfo (OnNPCSpawned) и не сразу,
+			-- поэтому guard обязателен. Округлено до шага: и в кэше, и в таблице одно и то же.
+			local stats = nil
+			if _G.playerstats ~= nil then
+				stats = _G.playerstats[id]
+			end
+			if stats ~= nil and type(stats.goldspend) == "number" then
+				local current = PlayerResource:GetGold(id)
+				local total = stats.goldspend
+				if type(current) == "number" then
+					total = total + current
+				end
+				networth = math.floor(math.floor(total + 0.5) / scd_topbar_networth_step) * scd_topbar_networth_step
+			end
+
+			local cache = scd_topbar_cache[id]
+			if cache == nil
+				or cache.race ~= race
+				or cache.hp ~= hp
+				or cache.barracks ~= barracks
+				or cache.barracks_total ~= barracks_total
+				or cache.defeated ~= defeated
+				or cache.networth ~= networth then
+				local row = {
+					race = race,
+					hp = hp,
+					barracks = barracks,
+					barracks_total = barracks_total,
+					defeated = defeated,
+					networth = networth
+				}
+				scd_topbar_cache[id] = row
+				CustomNetTables:SetTableValue("SCD_TopBar", tostring(id), row)
+			end
+		end
+	end
 end
 
 LinkLuaModifier( "modifier_extra_health_bonus", "modifiers/modifier_extra_health_bonus", LUA_MODIFIER_MOTION_NONE )
@@ -1798,18 +2001,24 @@ function _G:Defeat(id)
 		
 		CustomNetTables:SetTableValue("Ends_Stats", "statsinfo", _G.statsinfo)
 
-		local rating_table = CustomNetTables:GetTableValue("Rating","stats")
-		rating_table["ratings"] = {}
-		if _G.ratingstable["ratings"] then
-			for i=0,PlayerResource:GetPlayerCount()-1 do
-				rating_table["ratings"][i] = _G.ratingstable["ratings"][tostring(PlayerResource:GetSteamAccountID(i))] or {normal=1000,turbo=1000,duos=1000}
+		-- [SCD-OFFLINE] пересборка rating_table в конце игры отключена вместе с рейтингом.
+		-- Важно: GetTableValue("Rating","stats") теперь возвращает nil (таблица не
+		-- заполняется), и rating_table["ratings"] = {} уронил бы _G:Defeat ДО
+		-- GameRules:SetGameWinner(...) - игра бы никогда не заканчивалась.
+		if _G.SCD_RATING_ENABLED then
+			local rating_table = CustomNetTables:GetTableValue("Rating","stats")
+			rating_table["ratings"] = {}
+			if _G.ratingstable["ratings"] then
+				for i=0,PlayerResource:GetPlayerCount()-1 do
+					rating_table["ratings"][i] = _G.ratingstable["ratings"][tostring(PlayerResource:GetSteamAccountID(i))] or {normal=1000,turbo=1000,duos=1000}
+				end
+			else
+				for i=0,PlayerResource:GetPlayerCount()-1 do
+					rating_table["ratings"][i] = {normal=1000,turbo=1000,duos=1000}
+				end
 			end
-		else
-			for i=0,PlayerResource:GetPlayerCount()-1 do
-				rating_table["ratings"][i] = {normal=1000,turbo=1000,duos=1000}
-			end
+			CustomNetTables:SetTableValue("Rating","stats",rating_table)
 		end
-		CustomNetTables:SetTableValue("Rating","stats",rating_table)
 		
 		SCGameMode:Stats(winner)
 		--Challenges:OnGameEnded()

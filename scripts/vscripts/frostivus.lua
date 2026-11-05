@@ -711,9 +711,11 @@ end
 
 function frostivus:GetGift(tier, giftid)
 	local cmdPlayer = Convars:GetCommandClient()
-	if cmdPlayer and (tostring(PlayerResource:GetSteamID(cmdPlayer:GetPlayerID())) == "76561198112013738" or tostring(PlayerResource:GetSteamID(cmdPlayer:GetPlayerID())) == "76561198090912161") then
+	if cmdPlayer and _G.SCD_IsDevPlayer(cmdPlayer) then
         if tier and giftid then
-            frostivus:GiveGift(cmdPlayer:GetPlayerID(), frostivus.gifts[tonumber(tier)][tonumber(giftid)], false)
+            -- GetCommandClient() в этой сборке возвращает объект без метода
+            -- GetPlayerID, поэтому PlayerID берём через общий резолвер (commands.lua)
+            frostivus:GiveGift((_G.SCD_ResolveCallerID(cmdPlayer)), frostivus.gifts[tonumber(tier)][tonumber(giftid)], false)
 		end
 	end
 end

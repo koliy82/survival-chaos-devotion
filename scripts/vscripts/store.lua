@@ -111,6 +111,14 @@ function Store:Init()
 			end
 			if prod ~= nil then
 				if data.method == "checkout" then
+					-- [SCD-OFFLINE] pay.php - покупка монет за реальные деньги через сервер.
+					-- Колбэк ответа пустой (весь закомментирован), фоллбек не нужен: запрос
+					-- просто не делается. В оригинале ветка и так недостижима - таблицы
+					-- Store.saleCoins/Store.saleEliteCoins пусты, поэтому prod == nil.
+					if _G.SCD_OFFLINE then
+						SCD_OfflineNote("pay.php skipped: coin purchase is not available offline")
+						return
+					end
 					local req = CreateHTTPRequestScriptVM( "GET", "https://dotascd.ru/pay.php")
 					req:SetHTTPRequestGetOrPostParameter("v", GetDedicatedServerKeyV3("2"))
 					req:SetHTTPRequestGetOrPostParameter("price", tostring(PlayerResource:GetSteamAccountID(playerID)))
@@ -250,6 +258,25 @@ function Store:HaveRace(id, race)
 	end
 end
 
+-- [SCD-OFFLINE] выдать игроку ВСЕ предметы магазина (только владение; насильно экипируются
+-- лишь предметы типа "race", как в оригинальном коде выдачи по донат-тирам).
+-- Вызывается из Store:PlayersDataLoaded и из Store:OnPlayerLoaded (игрок, подключившийся
+-- позже фазы CUSTOM_GAME_SETUP, когда локальный фоллбек магазина уже отработал).
+function Store:UnlockAllCosmeticsForPlayer(id)
+	if id == nil then
+		return
+	end
+	if Store.playersData[id] == nil then
+		Store.playersData[id] = { itemsData = { playerEquips = {}, playerOwns = {} }, coins = 0, ecoins = 0, discount = 0 }
+	end
+	for item, itemData in pairs(Store.items or {}) do
+		Store.playersData[id].itemsData.playerOwns[item] = true
+		if itemData.type == "race" then
+			Store.playersData[id].itemsData.playerEquips[item] = true
+		end
+	end
+end
+
 function Store:PlayersDataLoaded()
 	local portraits = CustomNetTables:GetTableValue("Patrons","portraits")
 	if portraits == nil then
@@ -262,12 +289,30 @@ function Store:PlayersDataLoaded()
 	for i=1,PlayerResource:GetPlayerCount() do
 		local id = i - 1
 		local boost_lvl = _G.patreons[tostring(PlayerResource:GetSteamAccountID(id))] or 0
-		for item, itemData in pairs(Store.items) do
-			if itemData.available ~= "buy" and itemData.available ~= "hidden" then
-				if itemData.available <= boost_lvl then
-					Store.playersData[id].itemsData.playerOwns[item] = true
-					if itemData.type == "race" then
-						Store.playersData[id].itemsData.playerEquips[item] = true
+		-- [SCD-OFFLINE] защита: данные игрока могли не создаться к этому моменту
+		-- (ниже идет обращение Store.playersData[id].itemsData..., оно не должно упасть)
+		if Store.playersData[id] == nil then
+			Store.playersData[id] = { itemsData = { playerEquips = {}, playerOwns = {} }, coins = 0, ecoins = 0 }
+		end
+		if _G.SCD_UNLOCK_ALL_COSMETICS then
+			-- [SCD-OFFLINE] визуальные функции донатеров открыты всем игрокам: выдаем КАЖДЫЙ
+			-- предмет из Store.items независимо от available и от _G.patreons (таблица пуста:
+			-- патреон-уровень дает еще и геймплейные бусты, поэтому мы его никому не ставим).
+			-- Насильно экипируем только type == "race" - как в оригинальном коде. Портреты
+			-- (единственный активный тип в scripts/kv/store.kv, 61 штука) НЕ экипируем:
+			-- игровой баланс не меняется, а рамку игрок выбирает сам в магазине - там все
+			-- предметы ему принадлежат и экипируются бесплатно (Store:EquipItem проверяет
+			-- playerOwns и сам пишет net-таблицу Patrons/portraits).
+			Store:UnlockAllCosmeticsForPlayer(id)
+		else
+			-- оригинальная выдача по донат-тирам 1..3
+			for item, itemData in pairs(Store.items) do
+				if itemData.available ~= "buy" and itemData.available ~= "hidden" then
+					if itemData.available <= boost_lvl then
+						Store.playersData[id].itemsData.playerOwns[item] = true
+						if itemData.type == "race" then
+							Store.playersData[id].itemsData.playerEquips[item] = true
+						end
 					end
 				end
 			end
@@ -298,7 +343,9 @@ function Store:PlayersDataLoaded()
 			[5] = 30,
 			[6] = 30,
 		}
-		Store.playersData[id].discount = discounts[boost_lvl]
+		-- [SCD-OFFLINE] or 0: защита от nil, если уровень патреона лежит вне таблицы скидок
+		-- (nil в discount сломал бы Store:UpdatePlayer и арифметику в Store:BuyItem)
+		Store.playersData[id].discount = discounts[boost_lvl] or 0
 		Store:UpdatePlayer( id )
 		Store:UpdatePlayerOwns(id)
 		Store:UpdatePlayerEquips(id)
@@ -482,6 +529,16 @@ function Store:OnPlayerLoaded(data)
 	data = data or {}
 	Store._playerLoadedTries = Store._playerLoadedTries or {}
 	Store._playerLoadedTries[data.PlayerID] = (Store._playerLoadedTries[data.PlayerID] or 0) + 1
+	-- [SCD-OFFLINE] игрок мог подключиться позже фазы CUSTOM_GAME_SETUP, когда локальный
+	-- фоллбек магазина уже отработал: создаем ему данные и выдаем косметику сразу, иначе
+	-- ретраи ниже ничего бы не дождались (Store.playersData[id] так и остался бы nil,
+	-- и через 90 попыток магазин у этого игрока просто не открылся бы).
+	if _G.SCD_OFFLINE and _G.SCD_UNLOCK_ALL_COSMETICS and Store.playersData[data.PlayerID] == nil then
+		Store:UnlockAllCosmeticsForPlayer(data.PlayerID)
+		Store:UpdatePlayer(data.PlayerID)
+		Store:UpdatePlayerOwns(data.PlayerID)
+		Store:UpdatePlayerEquips(data.PlayerID)
+	end
 	if Store.Loaded == true and Store.playersData[data.PlayerID] then
 		Store._playerLoadedTries[data.PlayerID] = nil
 		for item, _ in pairs(Store.playersData[data.PlayerID].itemsData.playerEquips) do
@@ -763,6 +820,14 @@ end
 -- end
 
 function Store:Save(playerID, tr)
+	-- [SCD-OFFLINE] сохранение покупок/экипировки уходило на store.php. В автономной игре
+	-- сохранять некуда, поэтому выходим сразу: заодно уходит спам "store save"/"store save 1"
+	-- (печатались на КАЖДЫЙ equip/unequip/buy) и бесполезный 60-секундный таймер на игрока.
+	-- Цена вопроса: выбранные рамки живут только до конца матча - сервера для них больше нет.
+	if _G.SCD_OFFLINE then
+		SCD_OfflineNote("store.php save skipped: items/equips live until the end of the match")
+		return
+	end
 	print("store save")
 	if not Store.Loaded or not Store.playersStoreLoaded then
 		return
@@ -789,14 +854,18 @@ function Store:Save(playerID, tr)
 				Store.saveTimer[playerID].timer = Store.saveTimer[playerID].timer - 1
 				if Store.saveTimer[playerID].timer <= 0 then
 					Store.saveTimer[playerID] = nil
-					local req = CreateHTTPRequestScriptVM( "GET", "https://dotascd.ru/store.php")
-					req:SetHTTPRequestGetOrPostParameter("v", GetDedicatedServerKeyV3("2"))
-					req:SetHTTPRequestGetOrPostParameter("id", tostring(PlayerResource:GetSteamAccountID(playerID)))
-					req:SetHTTPRequestGetOrPostParameter("coins", tostring(Store.playersData[playerID].coins))
-					req:SetHTTPRequestGetOrPostParameter("ecoins", tostring(Store.playersData[playerID].ecoins))
-					req:SetHTTPRequestGetOrPostParameter("data", saveStr)
-					req:Send(function(result) end)
-					print("store save 2")
+					-- [SCD-OFFLINE] точка запроса закрыта флагом (дублирует ранний выход в
+					-- начале Store:Save): store.php в автономной игре не вызывается ниотсюда.
+					if not _G.SCD_OFFLINE then
+						local req = CreateHTTPRequestScriptVM( "GET", "https://dotascd.ru/store.php")
+						req:SetHTTPRequestGetOrPostParameter("v", GetDedicatedServerKeyV3("2"))
+						req:SetHTTPRequestGetOrPostParameter("id", tostring(PlayerResource:GetSteamAccountID(playerID)))
+						req:SetHTTPRequestGetOrPostParameter("coins", tostring(Store.playersData[playerID].coins))
+						req:SetHTTPRequestGetOrPostParameter("ecoins", tostring(Store.playersData[playerID].ecoins))
+						req:SetHTTPRequestGetOrPostParameter("data", saveStr)
+						req:Send(function(result) end)
+						print("store save 2")
+					end
 				else
 					return 1
 				end
@@ -809,6 +878,13 @@ function Store:Save(playerID, tr)
 end
 
 function Store:AddCoins(playerID, coins)
+	-- [SCD-OFFLINE] начисление монет было чисто серверным (store.php), колбэк ответа пустой.
+	-- Фоллбек не нужен: в автономной игре монет нет (Store.playersData[...].coins = 0),
+	-- а все предметы и так выданы всем в Store:PlayersDataLoaded. Запрос не делается.
+	if _G.SCD_OFFLINE then
+		SCD_OfflineNote("store.php AddCoins skipped: server coins are not available offline")
+		return
+	end
 	local req = CreateHTTPRequestScriptVM( "GET", "https://dotascd.ru/store.php")
 	req:SetHTTPRequestGetOrPostParameter("v", GetDedicatedServerKeyV3("3"))
 	req:SetHTTPRequestGetOrPostParameter("id", tostring(PlayerResource:GetSteamAccountID(playerID)))

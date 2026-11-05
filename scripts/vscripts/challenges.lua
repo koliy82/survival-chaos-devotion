@@ -422,7 +422,53 @@ function Challenges:UpdateChallengesForPlayer(playerid)
 	end
 end
 
+-- [SCD-OFFLINE] challenges.php недоступен. Колбэк ответа заполнял Challenges.player_data;
+-- без него панель челленджей просто молчала бы, а RefreshChallenges уронился бы на
+-- nil-индексации (Challenges.player_data[data.PlayerID] == nil). Поэтому offline-ветка
+-- СРАЗУ генерирует локальный набор челленджей - тот же, что оригинал делает при отсутствии
+-- сохранения на сервере. Слушатели регистрируются в обоих ветках и ровно один раз.
 function Challenges:LoadPlayers()
+	if _G.SCD_OFFLINE then
+		SCD_OfflineNote("challenges.php skipped: local challenges generated")
+		Challenges:GenerateLocalChallenges()
+	else
+		Challenges:LoadPlayersFromServer()
+	end
+
+	CustomGameEventManager:RegisterListener("GetChallenges", Dynamic_Wrap(Challenges, 'GetChallenges'))
+	CustomGameEventManager:RegisterListener("RefreshChallenges", Dynamic_Wrap(Challenges, 'RefreshChallenges'))
+end
+
+-- [SCD-OFFLINE] локальная генерация (без сервера): каждому игроку 8 случайных челленджей.
+-- id 4..8 остаются заблокированными, как в оригинале при boost_lvl = 0: _G.patreons намеренно
+-- пуст (патреон-уровень дает еще и геймплейные бусты, а открываем мы только визуал).
+-- Прогресс живет до конца матча, в БД не уходит (см. Challenges:SavePlayer).
+function Challenges:GenerateLocalChallenges()
+	local plc = PlayerResource:GetPlayerCount()
+	for i=0, plc-1 do
+		Challenges.player_data[i] = {}
+		Challenges.player_data[i].saved = false
+		Challenges.player_data[i].loaded = false
+		Challenges.player_data[i].challenges = {}
+		for challengeid=1, 8 do
+			local challenge = Challenges:GenerateChallenge(i, RandomInt(1, #Challenges.challenges_list), nil)
+			challenge.data.id = challengeid
+			if challengeid > 3 then
+				local boost_lvl = _G.patreons[tostring(PlayerResource:GetSteamAccountID(i))]
+				if boost_lvl and boost_lvl >= challengeid - 3 then
+					challenge.data.locked = false
+				else
+					challenge.data.locked = true
+				end
+			end
+			table.insert( Challenges.player_data[i].challenges, challenge)
+		end
+		Challenges:UpdateChallengesForPlayer(i)
+	end
+end
+
+-- оригинальная загрузка с сервера; вызывается только при _G.SCD_OFFLINE == false
+function Challenges:LoadPlayersFromServer()
 	local req = CreateHTTPRequestScriptVM( "GET", "https://dotascd.ru/challenges.php")
 	req:SetHTTPRequestGetOrPostParameter("v", GetDedicatedServerKeyV3("1"))
 	local plc = PlayerResource:GetPlayerCount()
@@ -492,8 +538,9 @@ function Challenges:LoadPlayers()
 	-- end
 	-- Challenges:UpdateChallengesForPlayer(0)
 	
-	CustomGameEventManager:RegisterListener("GetChallenges", Dynamic_Wrap(Challenges, 'GetChallenges'))
-	CustomGameEventManager:RegisterListener("RefreshChallenges", Dynamic_Wrap(Challenges, 'RefreshChallenges'))
+	-- [SCD-OFFLINE] регистрация слушателей перенесена в Challenges:LoadPlayers: там она
+	-- выполняется и в автономной ветке, и ровно один раз (двойная регистрация привела бы
+	-- к двойному срабатыванию GetChallenges/RefreshChallenges на одно событие клиента).
 end
 
 function Challenges:RefreshChallenges(data)
@@ -513,6 +560,13 @@ end
 function Challenges:SavePlayer(playerid)
 	if Challenges.player_data[playerid] and not Challenges.player_data[playerid].saved then
 		Challenges.player_data[playerid].saved = true
+		-- [SCD-OFFLINE] сохранение прогресса уходило на challenges.php. Колбэк ответа пустой
+		-- (внутри только закомментированный print), поэтому фоллбек не нужен - запрос просто
+		-- не делается. Флаг saved выставлен выше: повторных попыток сохранения не будет.
+		if _G.SCD_OFFLINE then
+			SCD_OfflineNote("challenges.php save skipped: progress is not persisted")
+			return
+		end
 		local data = {}
 		for _, challenge in pairs(Challenges.player_data[playerid].challenges) do
 			table.insert( data, challenge.data )

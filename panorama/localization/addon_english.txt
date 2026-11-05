@@ -919,6 +919,7 @@
 
 		"RatingSettingsCheckbox"			"Hide my rating"
 		"RatingTopLabel"					"Leaderboard"
+		"SCD_Defeat"						"Defeat"
 		
 		"Combat_Message_Test"				"{s:player_name} select spec: <font color='#4ae0bf'>{s:locstring_value}</font>!"
 		"Combat_Message_barrack_destroyed"	"{s:player_name}'s barrack has been destroyed!"

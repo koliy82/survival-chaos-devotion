@@ -35,6 +35,27 @@ WebBD.havefunc = function(self)
 end
 
 WebBD.commitfunc = function(self, onresult)
+    -- [SCD-OFFLINE] webbd.php недоступен. Колбэк коммита инициализирует данные, поэтому
+    -- offline-ветка вызывает фоллбек СРАЗУ (синхронно), а не оставляет игру ждать вечно:
+    --   onresult({})  - как при пустом теле ответа (chests.lua/battlepasses.lua в этой
+    --                   ветке берут else-ветки и выставляют PlayersLoaded = true);
+    --   все getfuncs  - с nil вместо строки результата, то есть ровно то, что они получили
+    --                   бы при отсутствующем ключе в ответе сервера.
+    -- setfuncs намеренно НЕ вызываются: это колбэки успешной записи в БД, а писать некуда.
+    -- print(json.encode(self.queries)) в офлайне пропущен - это был спам SQL-запросами.
+    if _G.SCD_OFFLINE then
+        SCD_OfflineNote("webbd.php skipped: transaction resolved locally with empty result")
+        if onresult then
+            onresult({})
+        end
+        for i=1, self.gets_index do
+            local getfunc = self.getfuncs[tostring(i)]
+            if getfunc then
+                getfunc(nil)
+            end
+        end
+        return
+    end
     print(json.encode(self.queries))
     local req = CreateHTTPRequestScriptVM( "POST", "https://dotascd.ru/webbd.php")
     if req then
