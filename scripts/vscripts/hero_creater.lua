@@ -1,3 +1,225 @@
+-- [SCD-FIX] «Артефакты» (forall_spec_hero_items) не работали: герои не собирали
+-- предметы. Причина - порядок и снимок состояния. Флаг items_spec читался ОДИН раз
+-- в момент создания героя (SpawnUnit) и захватывался замыканием OnLevelChanged, а
+-- сам метод GiveRandomItem определялся только если флаг УЖЕ стоял. Поэтому герои,
+-- созданные ДО выбора спец-способности, не получали предметы вообще и не начинали
+-- получать их потом (исключение - смерть героя и повторный спавн).
+--
+-- Теперь: (1) тело выдачи предмета - глобальная функция, (2) метод навешивается
+-- отдельной функцией, которую Init из forall_spec_hero_items.lua зовёт и для уже
+-- существующих героев, (3) проверка флага при выдаче на уровне - ЖИВАЯ.
+--
+-- Метод по-прежнему существует ТОЛЬКО у героев с включённым сбором: в
+-- addon_game_mode.lua (OnEntityKilled) наличие v.GiveRandomItem используется как
+-- признак права на предмет, и предмет выдаётся одному герою. Определи мы метод
+-- всем и проверяй флаг внутри - первый же герой без «Артефактов» съедал бы выдачу.
+
+-- Живая проверка: включён ли сбор предметов для героя данного игрока.
+-- Guard'ы на nil обязательны: .spec и .items_spec существуют не всегда.
+function _G.SCD_HeroItemsEnabled(id, unit_name)
+    if id == nil or unit_name == nil then return false end
+    local info = _G.playersinfo and _G.playersinfo[id]
+    if info == nil then return false end
+    local spec = info.spec
+    if spec == nil then return false end
+    local items_spec = spec.items_spec
+    if items_spec == nil then return false end
+    return items_spec[unit_name] == true
+end
+
+-- Навешивает метод выдачи предмета на героя. Идемпотентна: повторный вызов
+-- ничего не делает. Возвращает true, если метод был добавлен этим вызовом.
+function _G.SCD_AttachHeroItems(hero)
+    if hero == nil then return false end
+    if hero.GiveRandomItem ~= nil then return false end
+    function hero:GiveRandomItem()
+        return _G.SCD_GiveRandomItem(hero)
+    end
+    return true
+end
+
+-- Тело выдачи случайного предмета. Вынесено из замыкания SpawnUnit без изменения
+-- логики: список предметов, классовые предметы и публикация инвентаря в
+-- net-таблицу Hero_Items - авторские.
+function _G.SCD_GiveRandomItem(hero)
+
+    local unit_name = hero:GetUnitName()
+    local items = {
+        -- "item_spec_energy_booster",
+        -- "item_spec_vitality_booster",
+        -- "item_spec_sage_mask",
+        -- "item_spec_chainmail",
+        -- "item_spec_ring_of_regen",
+        -- "item_spec_gloves",
+        -- "item_spec_broadsword"
+        "item_spec_ring_of_basilius",
+        "item_spec_buckler",
+        "item_spec_ring_of_tarrasque",
+        "item_spec_point_booster",
+        "item_spec_urn_of_shadows",
+        "item_spec_crystalys",
+        "item_spec_claymore"
+    }
+    local class_items = {
+        tank = {"item_spec_chipped_vest","item_spec_crown","item_spec_cloak"},
+        mage = {"item_spec_void_stone","item_spec_mystic_staff","item_spec_tome_of_knowledge"},
+        asassin = {"item_spec_mithril_hammer","item_spec_crown","item_spec_void_stone"},
+        pusher = {"item_spec_crown","item_spec_elven_tunic","item_spec_bogduggs_baldric"}
+    }
+    for hero_class, hero_class_items in pairs(class_items) do
+        if string.find( unit_name, hero_class ) then
+
+            for _, class_item_name in pairs(hero_class_items) do
+                local Fffff = false
+                
+                for i=0,5 do
+                    local item = hero:GetItemInSlot(i)
+                    if item ~= nil then
+                         -- if по каждому классовому предмету
+                        if class_item_name == "item_spec_chipped_vest" then-- == название классового предмета
+                            -- смотрим есть ли в инвенторе этот предмет с грейдами                                  
+                            if item:GetAbilityName() == "item_spec_chipped_vest" then
+                                Fffff = true
+                            end
+                            if item:GetAbilityName() == "item_spec_blade_mail" then
+                                Fffff = true
+                            end
+                            if item:GetAbilityName() == "item_spec_arcanists_armor" then
+                                Fffff = true
+                            end
+                            
+                        end
+                        if class_item_name == "item_spec_crown" then-- == название классового предмета
+                            -- смотрим есть ли в инвенторе этот предмет с грейдами                                   
+                            if item:GetAbilityName() == "item_spec_crown" then
+                                Fffff = true
+                            end
+                            if item:GetAbilityName() == "item_spec_ultimate_orb" then
+                                Fffff = true
+                            end
+                            if item:GetAbilityName() == "item_spec_apex" then
+                                Fffff = true
+                            end
+                            
+                        end
+                        if class_item_name == "item_spec_cloak" then-- == название классового предмета
+                            -- смотрим есть ли в инвенторе этот предмет с грейдами                                 
+                            if item:GetAbilityName() == "item_spec_cloak" then
+                                Fffff = true
+                            end
+                            if item:GetAbilityName() == "item_spec_hood_of_defiance" then
+                                Fffff = true
+                            end
+                            if item:GetAbilityName() == "item_spec_pipe" then
+                                Fffff = true
+                            end
+                        end
+                        if class_item_name == "item_spec_void_stone" then-- == название классового предмета
+                            -- смотрим есть ли в инвенторе этот предмет с грейдами                                
+                            if item:GetAbilityName() == "item_spec_void_stone" then
+                                Fffff = true
+                            end
+                            if item:GetAbilityName() == "item_spec_perseverance" then
+                                Fffff = true
+                            end
+                            if item:GetAbilityName() == "item_spec_stormcrafter" then
+                                Fffff = true
+                            end
+                        end
+                        if class_item_name == "item_spec_mystic_staff" then-- == название классового предмета
+                            -- смотрим есть ли в инвенторе этот предмет с грейдами                                
+                            if item:GetAbilityName() == "item_spec_mystic_staff" then
+                                Fffff = true
+                            end
+                            if item:GetAbilityName() == "item_spec_meteor_hammer" then
+                                Fffff = true
+                            end
+                            if item:GetAbilityName() == "item_spec_scythe_of_vyse" then
+                                Fffff = true
+                            end
+                        end
+                        if class_item_name == "item_spec_tome_of_knowledge" then-- == название классового предмета
+                            -- смотрим есть ли в инвенторе этот предмет с грейдами                                 
+                            if item:GetAbilityName() == "item_spec_tome_of_knowledge" then
+                                Fffff = true
+                            end
+                            if item:GetAbilityName() == "item_spec_necronomicon" then
+                                Fffff = true
+                            end
+                            if item:GetAbilityName() == "item_spec_book_of_the_dead" then
+                                Fffff = true
+                            end
+                        end
+                        if class_item_name == "item_spec_mithril_hammer" then-- == название классового предмета
+                            -- смотрим есть ли в инвенторе этот предмет с грейдами                                   
+                            if item:GetAbilityName() == "item_spec_mithril_hammer" then
+                                Fffff = true
+                            end
+                            if item:GetAbilityName() == "item_spec_skull_basher" then
+                                Fffff = true
+                            end
+                            if item:GetAbilityName() == "item_spec_abyssal_blade" then
+                                Fffff = true
+                            end
+                        end
+                        if class_item_name == "item_spec_elven_tunic" then-- == название классового предмета
+                            -- смотрим есть ли в инвенторе этот предмет с грейдами                                 
+                            if item:GetAbilityName() == "item_spec_elven_tunic" then
+                                Fffff = true
+                            end
+                            if item:GetAbilityName() == "item_spec_pelt_of_the_old_wolf" then
+                                Fffff = true
+                            end
+                            if item:GetAbilityName() == "item_spec_assault_cuirass" then
+                                Fffff = true
+                            end
+                        end
+                        if class_item_name == "item_spec_bogduggs_baldric" then-- == название классового предмета
+                            -- смотрим есть ли в инвенторе этот предмет с грейдами                                   
+                            if item:GetAbilityName() == "item_spec_bogduggs_baldric" then
+                                Fffff = true
+                            end
+                            if item:GetAbilityName() == "item_spec_unhallowed_icon" then
+                                Fffff = true
+                            end
+                            if item:GetAbilityName() == "item_spec_watchers_gaze" then
+                                Fffff = true
+                            end
+                        end
+
+                    end
+                end             
+
+                if Fffff == false then
+                    table.insert( items, class_item_name )
+                end
+            end
+        end
+    end
+    -- [SCD-FIX] диагностика: одна строка на выдачу (событие редкое - каждый 4-й
+    -- уровень героя и смерть вражеского героя), чтобы в живом прогоне отличить
+    -- «флаг не выставился» от «выдача не сработала».
+    local granted = items[RandomInt(1, #items)]
+    hero:AddItemByName(granted)
+    print("[SCD-FIX] hero_items grant: " .. tostring(hero:GetPlayerOwnerID())
+            .. " " .. unit_name .. " lvl " .. tostring(hero:GetLevel())
+            .. " -> " .. tostring(granted))
+
+    local inventory = {}
+    for i=0,5 do
+        local item = hero:GetItemInSlot(i)
+        if item ~= nil then
+            inventory[tostring(i)] = item:GetAbilityName()
+        end
+    end
+    local invs = CustomNetTables:GetTableValue("Hero_Items",tostring(hero:GetPlayerOwnerID()))
+    if invs == nil then
+        invs = {}
+    end
+    invs[unit_name] = inventory
+    CustomNetTables:SetTableValue("Hero_Items", tostring(hero:GetPlayerOwnerID()), invs)
+end
+
 function SpawnUnit(event)
     local caster = event.caster
     local id = caster:GetPlayerOwnerID()
@@ -8,7 +230,8 @@ function SpawnUnit(event)
         local owner = caster:GetOwner()
         local unit_name = event.unit_name
 
-        local items_spec = _G.playersinfo[id].spec.items_spec and _G.playersinfo[id].spec.items_spec[unit_name]
+        -- [SCD-FIX] живая проверка вместо снимка (см. комментарий в начале файла)
+        local items_spec = _G.SCD_HeroItemsEnabled(id, unit_name)
 
         local hero = CreateUnitByName(unit_name, caster.herospawnpoint, true, owner, owner, team)
 
@@ -43,7 +266,7 @@ function SpawnUnit(event)
             local pfx = ParticleManager:CreateParticle("particles/econ/events/fall_2021/hero_levelup_fall_2021.vpcf", PATTACH_ABSORIGIN_FOLLOW, hero)
             ParticleManager:ReleaseParticleIndex(pfx)
             
-            if not onspawn and items_spec then
+            if not onspawn and _G.SCD_HeroItemsEnabled(id, unit_name) then
                 if level % 4 == 0 then
                     hero:GiveRandomItem()
                 end
@@ -81,176 +304,7 @@ function SpawnUnit(event)
         end
 
         if items_spec then
-            function hero:GiveRandomItem()
-                local unit_name = hero:GetUnitName()
-                local items = {
-                    -- "item_spec_energy_booster",
-                    -- "item_spec_vitality_booster",
-                    -- "item_spec_sage_mask",
-                    -- "item_spec_chainmail",
-                    -- "item_spec_ring_of_regen",
-                    -- "item_spec_gloves",
-                    -- "item_spec_broadsword"
-                    "item_spec_ring_of_basilius",
-                    "item_spec_buckler",
-                    "item_spec_ring_of_tarrasque",
-                    "item_spec_point_booster",
-                    "item_spec_urn_of_shadows",
-                    "item_spec_crystalys",
-                    "item_spec_claymore"
-                }
-                local class_items = {
-                    tank = {"item_spec_chipped_vest","item_spec_crown","item_spec_cloak"},
-                    mage = {"item_spec_void_stone","item_spec_mystic_staff","item_spec_tome_of_knowledge"},
-                    asassin = {"item_spec_mithril_hammer","item_spec_crown","item_spec_void_stone"},
-                    pusher = {"item_spec_crown","item_spec_elven_tunic","item_spec_bogduggs_baldric"}
-                }
-                for hero_class, hero_class_items in pairs(class_items) do
-                    if string.find( unit_name, hero_class ) then
-
-                        for _, class_item_name in pairs(hero_class_items) do
-                            local Fffff = false
-                            
-                            for i=0,5 do
-                                local item = hero:GetItemInSlot(i)
-                                if item ~= nil then
-                                     -- if по каждому классовому предмету
-                                    if class_item_name == "item_spec_chipped_vest" then-- == название классового предмета
-                                        -- смотрим есть ли в инвенторе этот предмет с грейдами                                  
-                                        if item:GetAbilityName() == "item_spec_chipped_vest" then
-                                            Fffff = true
-                                        end
-                                        if item:GetAbilityName() == "item_spec_blade_mail" then
-                                            Fffff = true
-                                        end
-                                        if item:GetAbilityName() == "item_spec_arcanists_armor" then
-                                            Fffff = true
-                                        end
-                                        
-                                    end
-                                    if class_item_name == "item_spec_crown" then-- == название классового предмета
-                                        -- смотрим есть ли в инвенторе этот предмет с грейдами                                   
-                                        if item:GetAbilityName() == "item_spec_crown" then
-                                            Fffff = true
-                                        end
-                                        if item:GetAbilityName() == "item_spec_ultimate_orb" then
-                                            Fffff = true
-                                        end
-                                        if item:GetAbilityName() == "item_spec_apex" then
-                                            Fffff = true
-                                        end
-                                        
-                                    end
-                                    if class_item_name == "item_spec_cloak" then-- == название классового предмета
-                                        -- смотрим есть ли в инвенторе этот предмет с грейдами                                 
-                                        if item:GetAbilityName() == "item_spec_cloak" then
-                                            Fffff = true
-                                        end
-                                        if item:GetAbilityName() == "item_spec_hood_of_defiance" then
-                                            Fffff = true
-                                        end
-                                        if item:GetAbilityName() == "item_spec_pipe" then
-                                            Fffff = true
-                                        end
-                                    end
-                                    if class_item_name == "item_spec_void_stone" then-- == название классового предмета
-                                        -- смотрим есть ли в инвенторе этот предмет с грейдами                                
-                                        if item:GetAbilityName() == "item_spec_void_stone" then
-                                            Fffff = true
-                                        end
-                                        if item:GetAbilityName() == "item_spec_perseverance" then
-                                            Fffff = true
-                                        end
-                                        if item:GetAbilityName() == "item_spec_stormcrafter" then
-                                            Fffff = true
-                                        end
-                                    end
-                                    if class_item_name == "item_spec_mystic_staff" then-- == название классового предмета
-                                        -- смотрим есть ли в инвенторе этот предмет с грейдами                                
-                                        if item:GetAbilityName() == "item_spec_mystic_staff" then
-                                            Fffff = true
-                                        end
-                                        if item:GetAbilityName() == "item_spec_meteor_hammer" then
-                                            Fffff = true
-                                        end
-                                        if item:GetAbilityName() == "item_spec_scythe_of_vyse" then
-                                            Fffff = true
-                                        end
-                                    end
-                                    if class_item_name == "item_spec_tome_of_knowledge" then-- == название классового предмета
-                                        -- смотрим есть ли в инвенторе этот предмет с грейдами                                 
-                                        if item:GetAbilityName() == "item_spec_tome_of_knowledge" then
-                                            Fffff = true
-                                        end
-                                        if item:GetAbilityName() == "item_spec_necronomicon" then
-                                            Fffff = true
-                                        end
-                                        if item:GetAbilityName() == "item_spec_book_of_the_dead" then
-                                            Fffff = true
-                                        end
-                                    end
-                                    if class_item_name == "item_spec_mithril_hammer" then-- == название классового предмета
-                                        -- смотрим есть ли в инвенторе этот предмет с грейдами                                   
-                                        if item:GetAbilityName() == "item_spec_mithril_hammer" then
-                                            Fffff = true
-                                        end
-                                        if item:GetAbilityName() == "item_spec_skull_basher" then
-                                            Fffff = true
-                                        end
-                                        if item:GetAbilityName() == "item_spec_abyssal_blade" then
-                                            Fffff = true
-                                        end
-                                    end
-                                    if class_item_name == "item_spec_elven_tunic" then-- == название классового предмета
-                                        -- смотрим есть ли в инвенторе этот предмет с грейдами                                 
-                                        if item:GetAbilityName() == "item_spec_elven_tunic" then
-                                            Fffff = true
-                                        end
-                                        if item:GetAbilityName() == "item_spec_pelt_of_the_old_wolf" then
-                                            Fffff = true
-                                        end
-                                        if item:GetAbilityName() == "item_spec_assault_cuirass" then
-                                            Fffff = true
-                                        end
-                                    end
-                                    if class_item_name == "item_spec_bogduggs_baldric" then-- == название классового предмета
-                                        -- смотрим есть ли в инвенторе этот предмет с грейдами                                   
-                                        if item:GetAbilityName() == "item_spec_bogduggs_baldric" then
-                                            Fffff = true
-                                        end
-                                        if item:GetAbilityName() == "item_spec_unhallowed_icon" then
-                                            Fffff = true
-                                        end
-                                        if item:GetAbilityName() == "item_spec_watchers_gaze" then
-                                            Fffff = true
-                                        end
-                                    end
-
-                                end
-                            end             
-
-                            if Fffff == false then
-                                table.insert( items, class_item_name )
-                            end
-                        end
-                    end
-                end
-                hero:AddItemByName(items[RandomInt(1, #items)])
-
-                local inventory = {}
-                for i=0,5 do
-                    local item = hero:GetItemInSlot(i)
-                    if item ~= nil then
-                        inventory[tostring(i)] = item:GetAbilityName()
-                    end
-                end
-                local invs = CustomNetTables:GetTableValue("Hero_Items",tostring(hero:GetPlayerOwnerID()))
-                if invs == nil then
-                    invs = {}
-                end
-                invs[unit_name] = inventory
-                CustomNetTables:SetTableValue("Hero_Items", tostring(hero:GetPlayerOwnerID()), invs)
-            end
+            _G.SCD_AttachHeroItems(hero)
         end
 
         if _G.playersinfo[id].unitsinfo[unit_name].inventory ~= nil then

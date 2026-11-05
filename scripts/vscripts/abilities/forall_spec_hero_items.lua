@@ -1,3 +1,41 @@
+-- [SCD-FIX] Дооснастить героев, созданных ДО выбора «Артефактов».
+-- SpawnUnit (hero_creater.lua) навешивает метод GiveRandomItem только если флаг
+-- items_spec уже стоял в момент создания героя, а сам флаг ставится здесь, в Init.
+-- Поэтому без этого прохода герои, заспавненные раньше выбора спец-способности,
+-- не собирали предметы ВОВСЕ и не начинали собирать потом - ровно та жалоба,
+-- которую мы чиним. Идиома поиска своих героев взята из spec_items.lua:14-20.
+local function SCD_RetrofitExistingHeroes(id)
+    if type(_G.SCD_AttachHeroItems) ~= "function"
+            or type(_G.SCD_HeroItemsEnabled) ~= "function" then
+        -- hero_creater.lua ещё не загружался -> героев не создавали, оснащать нечего
+        return 0
+    end
+    local info = _G.playersinfo and _G.playersinfo[id]
+    if info == nil or info.spec == nil then
+        return 0
+    end
+    local spec = info.spec
+    local target_type = DOTA_UNIT_TARGET_HERO + DOTA_UNIT_TARGET_BASIC
+    local flags = DOTA_UNIT_TARGET_FLAG_MAGIC_IMMUNE_ENEMIES
+            + DOTA_UNIT_TARGET_FLAG_NOT_ANCIENTS
+            + DOTA_UNIT_TARGET_FLAG_INVULNERABLE
+    local units = FindUnitsInRadius(spec:GetTeam(), spec:GetAbsOrigin(), nil, 999999,
+            DOTA_UNIT_TARGET_TEAM_FRIENDLY, target_type, flags, FIND_ANY_ORDER, false)
+    local attached = 0
+    for _, unit in pairs(units) do
+        if unit ~= nil and not unit:IsIllusion()
+                and unit:GetPlayerOwnerID() == id
+                and unit:FindAbilityByName("hero_core") ~= nil then
+            if _G.SCD_HeroItemsEnabled(id, unit:GetUnitName()) then
+                if _G.SCD_AttachHeroItems(unit) then
+                    attached = attached + 1
+                end
+            end
+        end
+    end
+    return attached
+end
+
 function Init(event)
     if not _G.spec_items then
         _G.spec_items = require( 'spec_items' )
@@ -32,4 +70,10 @@ function Init(event)
         }
     end
     CustomNetTables:SetTableValue("Hero_Items", tostring(id), invs)
+    -- [SCD-FIX] флаг стоит - теперь дооснащаем уже живых героев этого игрока.
+    -- Печатаем один раз на выбор спец-способности, не в цикле.
+    local attached = SCD_RetrofitExistingHeroes(id)
+    print("[SCD-FIX] hero_items Init: player " .. tostring(id)
+            .. " race " .. tostring(race_name)
+            .. " heroes retrofitted " .. tostring(attached))
 end
