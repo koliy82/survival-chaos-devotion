@@ -898,6 +898,7 @@
 		"RatingSettingsCheckbox"			"Скрывать мой рейтинг"
 		"RatingTopLabel"					"Таблица лидеров"
 		"SCD_Defeat"						"Поражение"
+		"SCD_Score"						"Счёт"
 		
 		"Combat_Message_barrack_destroyed"	"Барак игрока {s:player_name} был уничтожен!"
 		"Combat_Message_player_lose"		"{s:player_name} проиграл"
