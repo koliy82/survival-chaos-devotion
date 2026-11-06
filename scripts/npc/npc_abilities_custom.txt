@@ -32189,7 +32189,7 @@
         "AbilityValues"
         {
             "damage" "300"
-            "need_level" "3"
+            "need_level" "1"
         }
         "OnSpellStart"
         {
