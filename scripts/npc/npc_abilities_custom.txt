@@ -32199,12 +32199,6 @@
                 "Function"		"ForAllSpecDamageEnemies"
                 "Level"         "%need_level"
             }
-            "RunScript"
-            {
-                "ScriptFile"	"abilities/spec_abilities.lua"
-                "Function"		"CheckCastle"
-                "Level"         "%need_level"
-            }
         }
     }
 //barrack abilities

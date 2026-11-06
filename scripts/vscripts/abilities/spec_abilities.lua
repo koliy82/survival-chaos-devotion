@@ -5013,7 +5013,20 @@ function ForAllSpecDamageEnemies(event)
             .. " need_level=" .. tostring(event.Level) .. "(" .. type(event.Level) .. ")"
             .. " damage=" .. tostring(damage))
 
-    if caster_ancient and castle_level and level and castle_level >= level then
+    -- [SCD-FIX] Гейт по уровню замка УБРАН ПОЛНОСТЬЮ решением владельца
+    -- («Для "Мини взрыва" не нужен третий уровень замка»).
+    --
+    -- Почему убран весь гейт, а не только снижен порог до 1: прежняя проверка
+    -- `castle_level >= level` зависела от того, какой уровень возвращает GetLevel()
+    -- для здания. Если у npc_dota_custom_ancient уровень 0 (а не 1), то даже порог
+    -- need_level=1 не проходит, и способность молча возвращает золото, не нанося
+    -- урона. Снижение порога оставляло эту зависимость; убирание сравнения - нет.
+    -- Уровень замка по-прежнему печатается диагностикой выше, чтобы фактическое
+    -- значение было видно в логе, а не угадывалось.
+    --
+    -- Единственное оставшееся условие - наличие записи игрока: без casterid некого
+    -- бить и некому возвращать золото.
+    if casterinfo then
         local enemies = 0
         local targets = 0
         for id, _ in pairs(_G.playersinfo) do
@@ -5048,15 +5061,16 @@ function ForAllSpecDamageEnemies(event)
                 end
             end
         end
-        print("[SCD-DIAG] mini_boom: gate PASSED, enemies=" .. tostring(enemies)
-                .. " targets=" .. tostring(targets))
+        print("[SCD-DIAG] mini_boom: damage applied, enemies=" .. tostring(enemies)
+                .. " targets=" .. tostring(targets) .. " damage=" .. tostring(damage)
+                .. " castle_level=" .. tostring(castle_level))
     else
-        -- [SCD-FIX] возврат за несостоявшийся каст: вернуть золото И вычесть goldspend
+        -- [SCD-FIX] возврат за несостоявшийся каст: вернуть золото И вычесть goldspend.
+        -- Ветка достижима только если у кастера нет записи в _G.playersinfo.
         local refund = ability:GetGoldCost(ability:GetLevel()-1)
         _G.SCD_RefundAbilityGold(ability, casterid, refund)
-        print("[SCD-DIAG] mini_boom: gate NOT passed (castle_level="
-                .. tostring(castle_level) .. " need=" .. tostring(level)
-                .. "), refunded " .. tostring(refund))
+        print("[SCD-DIAG] mini_boom: NO playersinfo for casterid=" .. tostring(casterid)
+                .. ", refunded " .. tostring(refund))
     end
 end
 
