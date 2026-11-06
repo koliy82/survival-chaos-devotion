@@ -125,9 +125,53 @@ _G.SCD_ResolveCallerID = _G.SCD_ResolveCallerID or function(client)
 		end
 	end
 
+	-- [SCD-FIX] Предпоследний путь: ЕДИНСТВЕННЫЙ dev-игрок в матче. Нужен потому, что
+	-- одиночный фоллбек выше перестаёт работать, как только в матч добавлен бот
+	-- (GetPlayerCount() становится 2), а объект от Convars:GetCommandClient() в этой
+	-- сборке не отдаёт валидный PlayerID ни одним из способов. Так проявился баг
+	-- «второго бота добавить нельзя»:
+	--   cannot resolve caller id (table/table: 0x4ef34328)
+	-- Гадать здесь безопасно: команда всё равно гейтится _G.SCD_IsDevPlayer, а боты не
+	-- имеют Steam-аккаунта, поэтому их accountID = 0 и в список разработчиков попасть
+	-- не могут. Если dev-игроков двое и более — отказ, иначе выбрали бы произвольно.
+	if type(_G.SCD_DEV_ACCOUNT_IDS) == "table" then
+		local found, foundCount = nil, 0
+		for i = 0, 23 do
+			if PlayerResource:IsValidPlayerID(i) then
+				local okAcc, acc = pcall(function()
+					return PlayerResource:GetSteamAccountID(i)
+				end)
+				if okAcc and acc and _G.SCD_DEV_ACCOUNT_IDS[acc] then
+					found, foundCount = i, foundCount + 1
+				end
+			end
+		end
+		if foundCount == 1 then
+			return found, "single dev-player fallback"
+		end
+	end
+
 	local descr = "unknown"
 	pcall(function()
 		descr = type(client) .. "/" .. tostring(client)
+	end)
+	-- [SCD-DIAG] Какие поля и методы вообще есть у объекта вызвавшего. Без этого каждый
+	-- следующий такой отказ приходилось чинить вслепую: tostring() даёт только
+	-- "table: 0x...", и понять, чем объект можно опросить, невозможно. Печатаем один раз.
+	pcall(function()
+		if type(client) == "table" then
+			local key = "scd_caller_fields:" .. tostring(client)
+			if _G[key] == nil then
+				_G[key] = true
+				local names = {}
+				for k, v in pairs(client) do
+					names[#names + 1] = tostring(k) .. "(" .. type(v) .. ")"
+				end
+				table.sort(names)
+				SCD_Note(key, "command client fields (" .. #names .. "): "
+					.. table.concat(names, " "))
+			end
+		end
 	end)
 	return nil, "cannot resolve caller id (" .. descr .. ")"
 end
