@@ -31957,19 +31957,6 @@
                         "ScriptFile"	"abilities/forall_spec_hero_items.lua"
                         "Function"		"Init"
                     }
-                    "RunScript"
-                    {
-                        "ScriptFile"	"abilities/forall_spec_hero_items.lua"
-                        "Function"		"AddBonusAbilities"
-                    }
-                }
-                "OnDestroy"
-                {
-                    "RunScript"
-                    {
-                        "ScriptFile"	"abilities/forall_spec_hero_items.lua"
-                        "Function"		"RemoveBonusAbilities"
-                    }
                 }
             }
         }

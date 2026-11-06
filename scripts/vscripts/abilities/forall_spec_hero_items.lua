@@ -36,6 +36,32 @@ local function SCD_RetrofitExistingHeroes(id)
     return attached
 end
 
+-- [SCD-FIX] «Артефакты» не работали: движок выполняет ТОЛЬКО ПОСЛЕДНИЙ RunScript
+-- в одном событии datadriven. В KV-блоке модификатора
+-- modifiers_forall_spec_hero_items_pass событие OnCreated содержало ДВА RunScript:
+-- первым шёл Init (именно он заполняет items_spec и net-таблицу Hero_Items),
+-- вторым - AddBonusAbilities. Выполнялся только второй, поэтому Init не вызывался
+-- НИКОГДА и герои не собирали предметы.
+--
+-- Доказано контролируемым экспериментом в живой игре (06.11.2026): после перестановки
+-- блоков местами сработал Init, а AddBonusAbilities - нет. Замер также показал, что
+-- ScriptFile выполняется в ОТДЕЛЬНОМ окружении: внутри него type(Init) == "function",
+-- но _G.Init == nil, то есть функции файла не становятся глобалами и резолвятся
+-- движком по имени внутри этого окружения.
+--
+-- AddBonusAbilities и RemoveBonusAbilities не существуют нигде в scripts/vscripts:
+-- grep находит только AddBonusAbility / RemoveBonusAbility (ЕДИНСТВЕННОЕ число) в
+-- abilities/spec_abilities.lua, и они требуют event.ability_name, которого этот KV
+-- не передаёт. Обе ссылки мертвы у автора изначально, поэтому из KV удалены, а Init
+-- оставлен единственным RunScript в OnCreated (пустой OnDestroy удалён целиком).
+--
+-- ВАЖНО ДЛЯ ПРОЕКТА: таких мест в npc_abilities_custom.txt 372 (реестр -
+-- _dsh/RUNSCRIPT_DUPES.md, инструмент _dsh/audit_runscript_dupes.py). Среди
+-- теряемых функций ReturnGold (306, возврат золота башен), SpawnUnit (6),
+-- ApplyDamage (5), CustomCleaveAttack (2), MakeHeroIllusions и расовые апгрейды.
+-- Здесь исправлено только то, что относится к «Артефактам»: массовая правка
+-- включила бы давно не работающие механики и изменила бы баланс, поэтому она
+-- требует решения владельца.
 function Init(event)
     if not _G.spec_items then
         _G.spec_items = require( 'spec_items' )
