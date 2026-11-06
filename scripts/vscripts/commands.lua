@@ -52,23 +52,67 @@ end
 -- KillUnit/AddUnitXP/GiveItem вызывают его ДО проверки авторизации, то есть
 -- падали сразу, а остальные молча не пускал гейт.
 --
+-- [SCD-FIX] Общий фоллбек «единственный игрок» и «единственный dev-игрок».
+-- Вынесено в функцию, потому что нужно ОБЕИМ веткам резолвера: и когда клиента нет
+-- вовсе, и когда клиент есть, но не отдаёт валидный PlayerID. Раньше вторая ветка
+-- возвращала отказ раньше, чем доходила до проверки dev-игрока, из-за чего второй
+-- бот не добавлялся: с одним ботом GetPlayerCount() == 2, одиночный фоллбек уже не
+-- срабатывал, а до dev-фоллбека дело не доходило.
+local function SCD_LonePlayerFallback()
+	local okN, n = pcall(function()
+		return PlayerResource:GetPlayerCount()
+	end)
+	if okN and n == 1 then
+		for i = 0, 23 do
+			if PlayerResource:IsValidPlayerID(i) then
+				return i, "single-player fallback"
+			end
+		end
+	end
+	return nil, nil
+end
+
+-- Единственный dev-игрок в матче. Гадать здесь безопасно и это НЕ поблажка
+-- авторизации: команда всё равно гейтится _G.SCD_IsDevPlayer, а боты не имеют
+-- Steam-аккаунта (их accountID = 0), поэтому в список разработчиков попасть не могут
+-- и определению не мешают. Если dev-игроков двое и более - возвращаем nil, а не
+-- произвольный выбор: foundCount == 1 проверяется явно.
+local function SCD_LoneDevPlayerFallback()
+	if type(_G.SCD_DEV_ACCOUNT_IDS) ~= "table" then
+		return nil
+	end
+	local found, foundCount = nil, 0
+	for i = 0, 23 do
+		if PlayerResource:IsValidPlayerID(i) then
+			local okAcc, acc = pcall(function()
+				return PlayerResource:GetSteamAccountID(i)
+			end)
+			if okAcc and acc and _G.SCD_DEV_ACCOUNT_IDS[acc] then
+				found, foundCount = i, foundCount + 1
+			end
+		end
+	end
+	if foundCount == 1 then
+		return found
+	end
+	return nil
+end
+
 -- Поэтому пробуем несколько способов и возвращаем также описание того, какой
 -- сработал (оно печатается в лог один раз — чтобы мы знали правду, а не гадали).
 _G.SCD_ResolveCallerID = _G.SCD_ResolveCallerID or function(client)
 	if client == nil then
 		-- [SCD-FIX] Вызывающего объекта может не быть вовсе: команду дёргают не из
 		-- консоли, а из кода (таймер, обработчик события). Раньше здесь был
-		-- немедленный отказ, из-за которого одиночный фоллбек внизу недостижим.
-		-- Гадать нечего: если в матче ровно один игрок - вызвавший однозначен.
-		local okN, n = pcall(function()
-			return PlayerResource:GetPlayerCount()
-		end)
-		if okN and n == 1 then
-			for i = 0, 23 do
-				if PlayerResource:IsValidPlayerID(i) then
-					return i, "nil client -> single-player fallback"
-				end
-			end
+		-- немедленный отказ. Пробуем оба фоллбека - одиночного игрока и единственного
+		-- dev-игрока: второй как и нужен, когда в матче уже есть боты.
+		local id, how = SCD_LonePlayerFallback()
+		if id ~= nil then
+			return id, "nil client -> " .. how
+		end
+		local dev = SCD_LoneDevPlayerFallback()
+		if dev ~= nil then
+			return dev, "nil client -> single dev-player fallback"
 		end
 		return nil, "client is nil"
 	end
@@ -111,44 +155,18 @@ _G.SCD_ResolveCallerID = _G.SCD_ResolveCallerID or function(client)
 		end
 	end
 
-	-- Последний путь: если в матче ровно один игрок (наш обычный случай — юзер
-	-- играет один или проверяет локально), вызвавший однозначно он.
-	-- При двух и более игроках так гадать нельзя — возвращаем отказ.
-	local okCount, count = pcall(function()
-		return PlayerResource:GetPlayerCount()
-	end)
-	if okCount and count == 1 then
-		for i = 0, 23 do
-			if PlayerResource:IsValidPlayerID(i) then
-				return i, "single-player fallback"
-			end
-		end
-	end
-
-	-- [SCD-FIX] Предпоследний путь: ЕДИНСТВЕННЫЙ dev-игрок в матче. Нужен потому, что
-	-- одиночный фоллбек выше перестаёт работать, как только в матч добавлен бот
-	-- (GetPlayerCount() становится 2), а объект от Convars:GetCommandClient() в этой
-	-- сборке не отдаёт валидный PlayerID ни одним из способов. Так проявился баг
-	-- «второго бота добавить нельзя»:
+	-- Последние два пути - общие фоллбеки (см. SCD_LonePlayerFallback и
+	-- SCD_LoneDevPlayerFallback выше). Второй нужен потому, что первый перестаёт
+	-- работать, как только в матч добавлен бот: GetPlayerCount() становится 2.
+	-- Именно так проявлялся баг «второго бота добавить нельзя»:
 	--   cannot resolve caller id (table/table: 0x4ef34328)
-	-- Гадать здесь безопасно: команда всё равно гейтится _G.SCD_IsDevPlayer, а боты не
-	-- имеют Steam-аккаунта, поэтому их accountID = 0 и в список разработчиков попасть
-	-- не могут. Если dev-игроков двое и более — отказ, иначе выбрали бы произвольно.
-	if type(_G.SCD_DEV_ACCOUNT_IDS) == "table" then
-		local found, foundCount = nil, 0
-		for i = 0, 23 do
-			if PlayerResource:IsValidPlayerID(i) then
-				local okAcc, acc = pcall(function()
-					return PlayerResource:GetSteamAccountID(i)
-				end)
-				if okAcc and acc and _G.SCD_DEV_ACCOUNT_IDS[acc] then
-					found, foundCount = i, foundCount + 1
-				end
-			end
-		end
-		if foundCount == 1 then
-			return found, "single dev-player fallback"
-		end
+	local id1, how1 = SCD_LonePlayerFallback()
+	if id1 ~= nil then
+		return id1, how1
+	end
+	local dev = SCD_LoneDevPlayerFallback()
+	if dev ~= nil then
+		return dev, "single dev-player fallback"
 	end
 
 	local descr = "unknown"
