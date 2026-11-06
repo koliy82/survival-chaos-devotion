@@ -1390,6 +1390,9 @@ function SCGameMode:OnThink()
 	-- [SCD-OFFLINE] замена MMR в топ-баре: раса / % HP главного здания / бараки / Поражение
 	SCGameMode:UpdateTopBarNetTable()
 
+	-- [SCD-FIX] публикация активных модификаторов стоимости апгрейдов (см. UpdateCostModsNetTable)
+	SCGameMode:UpdateCostModsNetTable()
+
 	for i=0,PlayerResource:GetPlayerCount()-1 do
 		local state = PlayerResource:GetConnectionState(tonumber(i))
 		if state == 4 and players_connection_state[i] ~= 4 then
@@ -1523,6 +1526,63 @@ function SCGameMode:UpdateTopBarNetTable()
 				}
 				scd_topbar_cache[id] = row
 				CustomNetTables:SetTableValue("SCD_TopBar", tostring(id), row)
+			end
+		end
+	end
+end
+
+-- [SCD-FIX] Эффективная цена апгрейдов: какие модификаторы стоимости активны на замке.
+--
+-- ЗАЧЕМ. Сервер списывает за апгрейд НЕ всегда gold_cost.default: в
+-- items/items_upgrades.lua:13-16 он перебирает ключи блока gold_cost и, если у замка
+-- есть соответствующий модификатор, подменяет список на мод-вариант:
+--     for mod, mod_gold_cost in pairs(gradekv.gold_cost) do
+--         if mod ~= "default" and caster:HasModifier(mod) then gold_cost = mod_gold_cost end
+--     end
+-- Панорама показывает цену из races.kv, но проверить модификаторы из клиентского JS нечем
+-- (Entities.HasModifier в JS API нет). Поэтому показанная цена расходилась бы со списанной
+-- у трёх спеков. Решение: сервер публикует имена активных модификаторов, а клиент выбирает
+-- по ним вариант из того же gold_cost.
+--
+-- Полный список ключей собран по всему races.kv (95 блоков gold_cost, 4 уникальных ключа):
+-- default + ровно три мод-варианта. Проверка сделана скриптом, а не по памяти: у пауков имя
+-- modifiers_spiders_spec_air_swap_PASS_grade_gold (с pass), а не ..._air_swap_grade_gold.
+local SCD_COST_MODS = {
+	"modifiers_cultists_spec_arme_swap_pass_grade_gold",
+	"modifiers_orcs_spec_siege_swap_grade_gold",
+	"modifiers_spiders_spec_air_swap_pass_grade_gold",
+}
+_G.SCD_COST_MODS = SCD_COST_MODS
+
+local scd_costmods_cache = {}
+
+function SCGameMode:UpdateCostModsNetTable()
+	for id = 0, 7 do
+		if PlayerResource:IsValidPlayerID(id) and PlayerResource:GetTeam(id) ~= DOTA_TEAM_NOTEAM then
+			local info = _G.playersinfo[id]
+			-- Модификаторы проверяются на замке: апгрейды-предметы лежат именно там
+			-- (addon_game_mode.lua:1622-1626 AddItemByName на ancient), а в GetGoldCost
+			-- caster = self:GetCaster() у предмета - то есть тот же ancient.
+			local ancient = info and info.ancient
+			local names = {}
+			if ancient and not ancient:IsNull() and ancient.HasModifier then
+				for _, mod in ipairs(SCD_COST_MODS) do
+					-- pcall: модификатор может не существовать в текущей расе, а HasModifier
+					-- на чужом юните или в момент его удаления способна бросить ошибку.
+					local ok, has = pcall(function()
+						return ancient:HasModifier(mod)
+					end)
+					if ok and has then
+						names[#names + 1] = mod
+					end
+				end
+			end
+			-- Строка через запятую, а не массив: пустая таблица в net-таблице сериализуется
+			-- неоднозначно, а строка "" - всегда валидное значение. Клиент делает split(",").
+			local joined = table.concat(names, ",")
+			if scd_costmods_cache[id] ~= joined then
+				scd_costmods_cache[id] = joined
+				CustomNetTables:SetTableValue("SCD_CostMods", tostring(id), { mods = joined })
 			end
 		end
 	end

@@ -3,6 +3,6 @@
 	custom_net_tables =
 	[
 		"Ends_Stats","Patrons","Hero_Levels","Rating","hero_wearables","Diretide","Hero_Items","Player_Races","bannedraces","bannedspecs","pickphase","player_specs",
-		"SCD_TopBar"
+		"SCD_TopBar","SCD_CostMods"
 	]
 }
