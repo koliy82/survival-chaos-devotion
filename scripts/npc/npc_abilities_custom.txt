@@ -53902,20 +53902,13 @@
         {
             "RunScript"
             {
-                "ScriptFile"	"hero_creater.lua"
-                "Function"		"SpawnUnit"
-                "unit_name"     "npc_dota_dragons_hero_tank"
-                "barrack_level" "2"
-                "ancient_level" "2"
+                "ScriptFile"		"abilities/dragons_spawn_hero.lua"
+                "Function"		"SpawnHero"
+                "unit_name"		"npc_dota_dragons_hero_tank"
+                "hero"			"tank"
+                "barrack_level"	"2"
+                "ancient_level"	"2"
             }
-    		"RunScript"
-    		{
-    			"ScriptFile"		"abilities/dragons_spawn_hero.lua"
-    			"Function"			"SpawnHero"
-    			"hero"			    "tank"
-                "barrack_level" "2"
-                "ancient_level" "2"
-    		}
         }
     }
 	"dragons_hero_tank_eat"
@@ -54271,20 +54264,13 @@
         {
             "RunScript"
             {
-                "ScriptFile"	"hero_creater.lua"
-                "Function"		"SpawnUnit"
-                "unit_name"     "npc_dota_dragons_hero_mage"
-                "barrack_level" "2"
-                "ancient_level" "2"
+                "ScriptFile"		"abilities/dragons_spawn_hero.lua"
+                "Function"		"SpawnHero"
+                "unit_name"		"npc_dota_dragons_hero_mage"
+                "hero"			"mage"
+                "barrack_level"	"2"
+                "ancient_level"	"2"
             }
-    		"RunScript"
-    		{
-    			"ScriptFile"		"abilities/dragons_spawn_hero.lua"
-    			"Function"			"SpawnHero"
-    			"hero"			    "mage"
-                "barrack_level" "2"
-                "ancient_level" "2"
-    		}
         }
     }
     "dragons_hero_mage_freezing_expl"
@@ -54668,20 +54654,13 @@
         {
             "RunScript"
             {
-                "ScriptFile"	"hero_creater.lua"
-                "Function"		"SpawnUnit"
-                "unit_name"     "npc_dota_dragons_hero_mage_spec"
-                "barrack_level" "2"
-                "ancient_level" "2"
+                "ScriptFile"		"abilities/dragons_spawn_hero.lua"
+                "Function"		"SpawnHero"
+                "unit_name"		"npc_dota_dragons_hero_mage_spec"
+                "hero"			"mage"
+                "barrack_level"	"2"
+                "ancient_level"	"2"
             }
-    		"RunScript"
-    		{
-    			"ScriptFile"		"abilities/dragons_spawn_hero.lua"
-    			"Function"			"SpawnHero"
-    			"hero"			    "mage"
-                "barrack_level" "2"
-                "ancient_level" "2"
-    		}
         }
     }
     "dragons_hero_mage_spec_passive"
@@ -55168,20 +55147,13 @@
         {
             "RunScript"
             {
-                "ScriptFile"	"hero_creater.lua"
-                "Function"		"SpawnUnit"
-                "unit_name"     "npc_dota_dragons_hero_asassin"
-                "barrack_level" "2"
-                "ancient_level" "2"
+                "ScriptFile"		"abilities/dragons_spawn_hero.lua"
+                "Function"		"SpawnHero"
+                "unit_name"		"npc_dota_dragons_hero_asassin"
+                "hero"			"assassin"
+                "barrack_level"	"2"
+                "ancient_level"	"2"
             }
-    		"RunScript"
-    		{
-    			"ScriptFile"		"abilities/dragons_spawn_hero.lua"
-    			"Function"			"SpawnHero"
-    			"hero"			    "assassin"
-                "barrack_level" "2"
-                "ancient_level" "2"
-    		}
         }
     }
     "dragons_hero_asassin_blood_rite"
@@ -55630,20 +55602,13 @@
         {
             "RunScript"
             {
-                "ScriptFile"	"hero_creater.lua"
-                "Function"		"SpawnUnit"
-                "unit_name"     "npc_dota_dragons_hero_pusher"
-                "barrack_level" "3"
-                "ancient_level" "3"
+                "ScriptFile"		"abilities/dragons_spawn_hero.lua"
+                "Function"		"SpawnHero"
+                "unit_name"		"npc_dota_dragons_hero_pusher"
+                "hero"			"pusher"
+                "barrack_level"	"3"
+                "ancient_level"	"3"
             }
-    		"RunScript"
-    		{
-    			"ScriptFile"		"abilities/dragons_spawn_hero.lua"
-    			"Function"			"SpawnHero"
-    			"hero"			    "pusher"
-                "barrack_level" "3"
-                "ancient_level" "3"
-    		}
         }
     }
     "dragons_hero_pusher_spring"
