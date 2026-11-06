@@ -7,6 +7,37 @@ end
 
 unit_barrack_core_mod = class({})
 
+-- [SCD-FIX] Функция была ОБЪЯВЛЕНА ВНУТРИ BigThink, то есть переопределялась заново
+-- КАЖДУЮ СЕКУНДУ на КАЖДОМ бараке (лишняя аллокация замыкания + запись в глобал).
+-- Вынесена на уровень файла: определяется один раз при загрузке.
+--
+-- [SCD-FIX] УТЕЧКА ЧАСТИЦ. Исходный код создавал частицу всплывающего числа и НИКОГДА
+-- не вызывал ни DestroyParticle, ни ReleaseParticleIndex. BigThink работает раз в
+-- секунду на каждом бараке, поэтому за матч набегало:
+--     1 частица/с * 3 барака * 4 игрока = 12/с = 720/мин = 43 200/час
+-- Индексы частиц остаются занятыми навсегда, и их число растёт ПРОПОРЦИОНАЛЬНО
+-- ВРЕМЕНИ ИГРЫ -- это ровно тот признак, который описал владелец («чем дольше
+-- играешь, тем меньше FPS»). Правильный образец есть у самого автора:
+-- hero_creater.lua:266-267 и unit_building_core.lua:32-33 освобождают индекс.
+-- Одноразовые частицы от способностей так делать не обязаны -- эта утечка опасна
+-- именно тем, что безусловная и периодическая.
+function CustomFloatingText(unit, text, color)
+    local particle = ParticleManager:CreateParticle(
+        "particles/msg_fx/msg_number.vpcf",
+        PATTACH_WORLDORIGIN,
+        unit
+    )
+        -- Get position 200 units above the unit
+    local pos = unit:GetAbsOrigin() + Vector(0, 0, 250)
+    ParticleManager:SetParticleControl(particle, 0, pos)
+    ParticleManager:SetParticleControl(particle, 1, Vector(0, tonumber(text), 0))
+    ParticleManager:SetParticleControl(particle, 2, Vector(1, #tostring(text), 0))
+    ParticleManager:SetParticleControl(particle, 3, color or Vector(255, 255, 255))
+    -- [SCD-FIX] освобождаем индекс: частица одноразовая, её содержимое уже задано
+    -- через контрольные точки, handle скрипту больше не нужен.
+    ParticleManager:ReleaseParticleIndex(particle)
+end
+
 function unit_barrack_core_mod:StartGame()
     local caster = self:GetCaster()
     caster.creepspawnpoint = caster:GetAbsOrigin() + caster:GetForwardVector()*100
@@ -76,20 +107,9 @@ function unit_barrack_core_mod:BigThink()
             end
             caster.localtimer = caster.barrack_timer
         else
-            function CustomFloatingText(unit, text, color)
-                local particle = ParticleManager:CreateParticle(
-                    "particles/msg_fx/msg_number.vpcf",
-                    PATTACH_WORLDORIGIN,
-                    unit
-                )
-                    -- Get position 200 units above the unit
-                local pos = unit:GetAbsOrigin() + Vector(0, 0, 250)
-                ParticleManager:SetParticleControl(particle, 0, pos)
-                ParticleManager:SetParticleControl(particle, 1, Vector(0, tonumber(text), 0))
-                ParticleManager:SetParticleControl(particle, 2, Vector(1, #tostring(text), 0))
-                ParticleManager:SetParticleControl(particle, 3, color or Vector(255, 255, 255))
-            end
-            -- Usage:
+            -- [SCD-FIX] определение функции вынесено на уровень файла (см. выше):
+            -- раньше оно выполнялось здесь каждый тик. Сама функция теперь
+            -- освобождает индекс частицы, иначе за матч накапливались десятки тысяч.
             CustomFloatingText(caster, caster.localtimer, Vector(150, 150, 150))
         end
         --return 1
