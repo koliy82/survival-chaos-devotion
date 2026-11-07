@@ -7,6 +7,11 @@ end
 
 units_core_mod = class({})
 
+-- [SCD-FIX] Создавать ли декоративные пропы (def_wearables из races.kv) на НЕ-героях.
+-- false = оптимизация включена, true = вид как в оригинале. Обоснование и цифры --
+-- у блока war_table ниже.
+_G.SCD_CREEP_COSMETICS = false
+
 function units_core_mod:OnCreated( kv )
     if IsServer() then
         local caster = self:GetCaster()
@@ -26,7 +31,26 @@ function units_core_mod:OnCreated( kv )
                 caster:SetModelScale(_G.playersinfo[id].unitsinfo[unit_name].store_model_scale)
             end
             local war_table = _G.playersinfo[id].unitsinfo[unit_name].store_wearables or _G.playersinfo[id].unitsinfo[unit_name].def_wearables
-            if war_table ~= nil then
+            -- [SCD-FIX] Косметика НЕ-героев отключена. Замер 07.11 (duos, 4 игрока,
+            -- настоящий SpawnUnits): на каждого крипа навешивалось ~2.6 prop_dynamic
+            -- (в races.kv 50 не-геройских блоков def_wearables по 4-5 предметов).
+            -- 282 крипа -> 731 проп -> клиентский FPS 14.5; после снятия 717 слотов
+            -- 303 крипа -> 126 пропов -> FPS 21.6 (+49%) и ~20.2 ещё три минуты.
+            -- Геймплей не меняется: пропы декоративные, урон/HP/броня/способности
+            -- задаются ниже из races.kv. Утечки на смерть нет (пропы умирают вместе с
+            -- владельцем: после ForceKill 369 крипов пропов стало 111, сирот 0),
+            -- поэтому стоимость пропорциональна числу ЖИВЫХ крипов.
+            -- Герои косметику СОХРАНЯЮТ. Критерий -- ИМЯ, а не только IsRealHero():
+            -- герои рас объявлены в npc_units_custom.txt как npc_dota_<race>_hero_*
+            -- и относятся к npc_dota_creature, поэтому IsRealHero() ("настоящий герой
+            -- Dota") для них, скорее всего, false -- по нему фикс срезал бы косметику
+            -- и с героев тоже. Сверка npc_units_custom.txt с races.kv: units_core висит
+            -- на 95 юнитах с "_hero" в имени и на 163 без него; def_wearables есть у
+            -- 77 героев и 50 НЕ-героев, причём все 77 содержат "_hero". То есть
+            -- признак разделяет множества точно. IsRealHero() оставлен страховкой.
+            if war_table ~= nil and (_G.SCD_CREEP_COSMETICS
+                    or string.find(unit_name, "_hero", 1, true)
+                    or (caster.IsRealHero and caster:IsRealHero())) then
                 Wearable:WearDefaults(caster)
                 for _, wearable in pairs(war_table) do
                     Wearable:Wear(caster, wearable)
