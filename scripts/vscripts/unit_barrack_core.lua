@@ -38,6 +38,64 @@ function CustomFloatingText(unit, text, color)
     ParticleManager:ReleaseParticleIndex(particle)
 end
 
+-- [SCD-FIX] ПРЕДОХРАНИТЕЛЬ ПРОТИВ ЛАВИНООБРАЗНОГО НАКОПЛЕНИЯ КРИПОВ.
+--
+-- ЗАЧЕМ. Замер в живой игре (duos, 4 игрока, волны по 100 крипов; клиентский кадр мерили
+-- сэмплером в панораме через $.Schedule(0,...), серверный -- через GetGameFrameTime)
+-- показал, что клиентский FPS зависит почти исключительно от числа ОДНОВРЕМЕННО ЖИВЫХ
+-- юнитов:
+--      68 живых -> 155..178 FPS      355 -> 28..60 FPS
+--     160       ->  95..120          452 -> 18..28 FPS
+--     252       ->  62..80           655 ->   8..12 FPS
+--                                    ~755 ->  6..9   (владелец описывал «падает до 5»)
+-- Серверный кадр при этом ВСЕГДА ровно 33.33 мс (30 тиков/с) и ни одного пропущенного
+-- тика, даже при 1084 AIThink/с: серверная Lua успевает, узкое место -- рендер клиента.
+--
+-- ЧТО ПРОВЕРЕНО И НЕ ПОМОГЛО (чтобы не повторять эти ветки):
+--   * NoHealthBar() на 479 юнитах -- FPS не изменился (22.8 -> 20.0, в пределах шума).
+--     Хп-полосы узким местом НЕ являются.
+--   * Прореживание тиков AI крипов x2 -- FPS не изменился (21.7 -> 21.1). Прежний замер
+--     «+75%» оказался артефактом методики: там тело AI не выполнялось ВОВСЕ, крипы
+--     переставали двигаться и атаковать. Это ломает игру, а не оптимизирует её.
+--   * Утечек таймеров нет: периодические Timers:CreateTimer завершаются, вечные
+--     (0.2 / 0.1 / 1 с) -- фиксированная стоимость, со временем не растущая.
+--   * Серверный Lua не конкурирует с рендером: сервер ни разу не пропустил тик.
+-- Единственный действенный рычаг -- не давать числу одновременно живых юнитов расти
+-- бесконечно.
+--
+-- КАК РАБОТАЕТ. Порог задан по ВСЕЙ карте, а не на игрока: FPS зависит от общего числа
+-- юнитов в кадре, а не от их принадлежности. Пока живых крипов меньше порога, поведение
+-- ИДЕНТИЧНО оригинальному -- проверка стоит в начале SpawnUnits и ничего не меняет.
+-- Выше порога волна пропускается ЦЕЛИКОМ, и спавн возобновляется сам, как только крипы
+-- погибнут. Именно пропускается, а не урезается: урезание изменило бы состав волны и
+-- баланс рас, а пропуск срабатывает только там, где игра уже неиграбельна по FPS.
+--
+-- Здания (npc_dota_custom_*) и герои (*_hero_*) в подсчёт не входят: их число ограничено
+-- правилами игры и само по себе FPS не роняет.
+--
+-- НАСТРОЙКА. _G.SCD_CREEP_CAP_TOTAL = 300 соответствует измеренным 28..60 FPS.
+-- Полное отключение: _G.SCD_CREEP_CAP_ENABLED = false.
+_G.SCD_CREEP_CAP_ENABLED = true
+_G.SCD_CREEP_CAP_TOTAL = 300
+
+function _G.SCD_CountAliveCreeps()
+    local n = 0
+    local ok, list = pcall(function()
+        return Entities:FindAllByClassname("npc_dota_creature")
+    end)
+    if not ok or not list then return n end
+    for _, u in pairs(list) do
+        if u.IsAlive and u:IsAlive() then
+            local nm = u.GetUnitName and u:GetUnitName()
+            if nm and not string.find(nm, "^npc_dota_custom_")
+                    and not string.find(nm, "_hero_") then
+                n = n + 1
+            end
+        end
+    end
+    return n
+end
+
 function unit_barrack_core_mod:StartGame()
     local caster = self:GetCaster()
     caster.creepspawnpoint = caster:GetAbsOrigin() + caster:GetForwardVector()*100
@@ -119,6 +177,28 @@ end
 
 function unit_barrack_core_mod:SpawnUnits()
     local caster = self:GetCaster()
+    -- [SCD-FIX] предохранитель против лавинообразного накопления крипов. Результаты
+    -- замеров и отвергнутые варианты -- в комментарии к _G.SCD_CountAliveCreeps выше.
+    if _G.SCD_CREEP_CAP_ENABLED and _G.SCD_CREEP_CAP_TOTAL then
+        local alive = _G.SCD_CountAliveCreeps()
+        if alive >= _G.SCD_CREEP_CAP_TOTAL then
+            -- флаг ОБЩИЙ, а не на модификаторе: SpawnUnits вызывается на каждом бараке,
+            -- и per-barrack флаг давал бы 9 одинаковых строк в консоль за один раунд
+            -- (наблюдено в замере 03:29:52).
+            if not _G.scd_creep_cap_noted then
+                _G.scd_creep_cap_noted = true
+                print(string.format(
+                    "[SCD-FIX] creep cap: живых крипов %d >= порога %d, волны пропущены (спавн возобновится, когда крипы погибнут)",
+                    alive, _G.SCD_CREEP_CAP_TOTAL))
+            end
+            return
+        elseif _G.scd_creep_cap_noted then
+            _G.scd_creep_cap_noted = nil
+            print(string.format(
+                "[SCD-FIX] creep cap: живых крипов %d < порога %d, спавн возобновлён",
+                alive, _G.SCD_CREEP_CAP_TOTAL))
+        end
+    end
     local team = caster:GetTeam()
     local owner = caster:GetOwner()
     local function delayedSpawn(unitsToSpawn)
