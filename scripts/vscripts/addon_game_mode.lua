@@ -59,6 +59,9 @@ require( "store" )
 
 require( "commands" )
 
+-- [SCD-FIX] настройка косметики крипов, выбираемая хостом лобби на этапе выбора расы
+require( "scd_settings" )
+
 _G.profiler = require("profiler")
 
 _G.onstartgame = {}
@@ -1392,6 +1395,10 @@ function SCGameMode:OnThink()
 
 	-- [SCD-FIX] публикация активных модификаторов стоимости апгрейдов (см. UpdateCostModsNetTable)
 	SCGameMode:UpdateCostModsNetTable()
+
+	-- [SCD-FIX] хост лобби и настройка косметики крипов: публикует SCD_Settings и слушает
+	-- событие SCDSetCosmetics от галочки в пик-экране (scripts/vscripts/scd_settings.lua)
+	if _G.SCD_Settings then _G.SCD_Settings:Think() end
 
 	for i=0,PlayerResource:GetPlayerCount()-1 do
 		local state = PlayerResource:GetConnectionState(tonumber(i))
