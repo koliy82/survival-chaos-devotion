@@ -266,6 +266,12 @@ function Commands:Init()
     -- [SCD-OFFLINE] бот в матч для одиночного тестирования (топ-бар на 2+ игрока, способности
     -- по вражеским постройкам). Гейт тот же: автономная сборка + _G.SCD_IsDevPlayer.
     Convars:RegisterCommand( "scd_add_bot", Dynamic_Wrap(Commands, 'SCDAddBot'), "SCD offline: add a bot player with a full base to a running match", 0 )
+    -- [SCD-PERF] замер производительности: волны крипов по требованию, переключатель
+    -- декоративных моделей (оригинальный вид против фикса FPS), счётчики и очистка поля.
+    Convars:RegisterCommand( "scd_spawn_waves", Dynamic_Wrap(Commands, 'SCDSpawnWaves'), "SCD perf: spawn N creep waves through the real SpawnUnits path", 0 )
+    Convars:RegisterCommand( "scd_cosmetics", Dynamic_Wrap(Commands, 'SCDCosmetics'), "SCD perf: toggle decorative creep models (original look vs the FPS fix)", 0 )
+    Convars:RegisterCommand( "scd_perf", Dynamic_Wrap(Commands, 'SCDPerf'), "SCD perf: print the current unit/prop load", 0 )
+    Convars:RegisterCommand( "scd_kill_creeps", Dynamic_Wrap(Commands, 'SCDKillCreeps'), "SCD perf: remove all creeps (heroes and buildings are kept)", 0 )
     
 	CustomGameEventManager:RegisterListener("StartProfiler", Dynamic_Wrap(Commands, 'UIStartProfiler'))
 	CustomGameEventManager:RegisterListener("StopProfiler", Dynamic_Wrap(Commands, 'UIStopProfiler'))
@@ -1084,4 +1090,337 @@ function Commands:SCDAddBotImpl(...)
 			.. " (top bar slot should appear within 0.2 s)")
 		return nil
 	end)
+end
+
+-- ============================================================================
+-- [SCD-PERF] Инструменты замера производительности (dev-команды).
+--
+-- ЗАЧЕМ. Падение FPS к концу матча объяснялось декоративными моделями (prop_dynamic),
+-- которые units_core.lua вешал на КАЖДОГО крипа из def_wearables в races.kv (50
+-- не-геройских блоков по 4-5 предметов, в среднем ~2.6 модели на крипа). Фикс
+-- отключает их у не-героев флагом _G.SCD_CREEP_COSMETICS.
+--
+-- Эти команды позволяют сравнить «как было» и «как стало» В ОДНОМ МАТЧЕ, а не
+-- перезапуская две разные сборки: флаг переключается в рантайме.
+--
+-- Команды (консоль Dota):
+--   scd_spawn_waves <N> [интервал_сек=5] [неуязвимые=0]
+--   scd_spawn_waves stop
+--   scd_cosmetics <on|off|status>
+--   scd_perf                - текущая нагрузка: юниты, prop_dynamic, состояние флага
+--   scd_kill_creeps         - убрать всех крипов (герои и здания не трогаются)
+--
+-- Порядок честного сравнения (иначе нагрузка в двух замерах не совпадёт):
+--   scd_kill_creeps
+--   scd_cosmetics on            <- вид как в оригинале
+--   scd_spawn_waves 50 5        <- замерить FPS
+--   scd_kill_creeps
+--   scd_cosmetics off           <- фикс
+--   scd_spawn_waves 50 5        <- замерить FPS
+--
+-- Волны спавнятся НАСТОЯЩИМ путём - unit_barrack_core_mod:SpawnUnits() на каждом
+-- бараке каждого игрока. Это принципиально: прямой CreateUnitByName крипов ЧУЖОЙ расы
+-- ронял units_core.lua:21 (unitsinfo[unit_name] = nil) и до Wearable:Wear дело не
+-- доходило, то есть косметика не надевалась вовсе и замерялась не та игра - такие
+-- крипы выходили заметно дешевле настоящих (459 живых -> 19-25 FPS против 437 -> 7.8).
+--
+-- FPS этими командами НЕ измеряется: в API панорамы частоты кадров нет. Смотреть
+-- встроенным счётчиком Dota (в консоли клиента: cl_showfps 2) либо сэмплером
+-- _dsh/inject_fps_sampler.py, который печатает [SCD-FPS] раз в 5 секунд.
+--
+-- Гейт тот же, что у остальных scd_-команд: автономная сборка + _G.SCD_IsDevPlayer.
+-- ============================================================================
+
+local function SCD_PerfGate(cmdName)
+	if not _G.SCD_OFFLINE then
+		print("[SCD-PERF] " .. cmdName .. ": available only in the offline build")
+		return nil
+	end
+	local cmdPlayer
+	if IsInToolsMode() then
+		cmdPlayer = PlayerResource:GetPlayer(0)
+	else
+		cmdPlayer = Convars:GetCommandClient()
+	end
+	-- GetCommandClient() в этой сборке возвращает объект без GetPlayerID, поэтому резолвим
+	-- общим помощником (см. _G.SCD_ResolveCallerID в шапке файла)
+	local id, how = _G.SCD_ResolveCallerID(cmdPlayer)
+	if id == nil then
+		print("[SCD-PERF] " .. cmdName .. ": cannot resolve the calling player (" .. tostring(how) .. ")")
+		return nil
+	end
+	if not _G.SCD_IsDevPlayer(id) then
+		print("[SCD-PERF] " .. cmdName .. ": access denied for player " .. tostring(id))
+		return nil
+	end
+	return id
+end
+
+local function SCD_PerfFindAll(classname)
+	local ok, list = pcall(function() return Entities:FindAllByClassname(classname) end)
+	if ok and list then return list end
+	return {}
+end
+
+-- Здания аддона называются npc_dota_custom_* (их 12 из 295 определений), герои рас
+-- содержат "_hero". Всё остальное с классом npc_dota_creature - крипы.
+local function SCD_PerfIsCreep(u)
+	local nm = u.GetUnitName and u:GetUnitName()
+	if not nm then return false end
+	if string.find(nm, "^npc_dota_custom_") then return false end
+	if string.find(nm, "_hero", 1, true) then return false end
+	return true
+end
+
+-- Критерий героя - ИМЯ, а не только IsRealHero(): живой замер показал, что у героя расы
+-- (npc_dota_dragons_hero_mage_spec) IsRealHero() == false, потому что это
+-- npc_dota_creature, а не настоящий герой Dota.
+local function SCD_PerfIsHero(u)
+	local nm = (u.GetUnitName and u:GetUnitName()) or ""
+	if string.find(nm, "_hero", 1, true) then return true end
+	return (u.IsRealHero and u:IsRealHero()) and true or false
+end
+
+local function SCD_PerfCountProps()
+	local n = 0
+	for _ in pairs(SCD_PerfFindAll("prop_dynamic")) do n = n + 1 end
+	return n
+end
+
+local function SCD_PerfLoad()
+	local alive, creeps, heroes = 0, 0, 0
+	for _, u in pairs(SCD_PerfFindAll("npc_dota_creature")) do
+		if u.IsAlive and u:IsAlive() then
+			alive = alive + 1
+			if SCD_PerfIsHero(u) then heroes = heroes + 1
+			elseif SCD_PerfIsCreep(u) then creeps = creeps + 1 end
+		end
+	end
+	return alive, creeps, heroes
+end
+
+-- Один раунд = SpawnUnits на всех живых бараках всех игроков.
+local function SCD_PerfSpawnRound(invuln)
+	local barracks, pinned = 0, 0
+	for pid = 0, 7 do
+		local info = _G.playersinfo and _G.playersinfo[pid]
+		if info then
+			for _, b in pairs(info.baracks or {}) do
+				if b and not b:IsNull() and b.IsAlive and b:IsAlive() then
+					local mod = b:FindModifierByName("unit_barrack_core_mod")
+					if mod and mod.SpawnUnits then
+						-- Точку спавна выставляет unit_barrack_core_mod:StartGame(), а это НЕ
+						-- штатный колбэк модификатора: его один раз зовёт цикл по _G.onstartgame
+						-- на старте матча. До этого момента caster.creepspawnpoint == nil и
+						-- CreateUnitByName падает с нечитаемым "Parameter type mismatch"
+						-- (unit_barrack_core.lua:128). Добираем точку по той же авторской
+						-- формуле (unit_barrack_core.lua:43-44), а не подменяем логику.
+						if b.creepspawnpoint == nil and b.GetAbsOrigin then
+							b.creepspawnpoint = b:GetAbsOrigin() + b:GetForwardVector() * 100
+							b.herospawnpoint = b:GetAbsOrigin() - b:GetForwardVector() * 100
+						end
+						barracks = barracks + 1
+						local ok, err = pcall(mod.SpawnUnits, mod)
+						if not ok then
+							print("[SCD-PERF] SpawnUnits на бараке игрока " .. tostring(pid)
+								.. " упал: " .. tostring(err))
+						end
+					end
+				end
+			end
+		end
+	end
+	if invuln then
+		for _, u in pairs(SCD_PerfFindAll("npc_dota_creature")) do
+			if u.IsAlive and u:IsAlive() and SCD_PerfIsCreep(u)
+					and not u:HasModifier("modifier_invulnerable") then
+				pcall(function() u:AddNewModifier(u, nil, "modifier_invulnerable", {}) end)
+				pinned = pinned + 1
+			end
+		end
+	end
+	return barracks, pinned
+end
+
+-- Серия волн хранится по id вызвавшего: повторный вызов ЗАМЕНЯЕТ прежнюю серию,
+-- а не добавляет вторую поверх (иначе две серии спавнили бы вдвое чаще).
+Commands.scd_wave_jobs = Commands.scd_wave_jobs or {}
+
+function Commands:SCDSpawnWaves(...)
+	local argv = { ... }
+	local argc = select("#", ...)
+	local ok, err = pcall(function()
+		return Commands:SCDSpawnWavesImpl(unpack(argv, 1, argc))
+	end)
+	if not ok then
+		print("[SCD-PERF] scd_spawn_waves FAILED: " .. tostring(err))
+	end
+end
+
+function Commands:SCDSpawnWavesImpl(...)
+	local id = SCD_PerfGate("scd_spawn_waves")
+	if id == nil then return end
+
+	-- часть сборок передаёт первым аргументом имя команды - отсекаем, чтобы числа не съехали
+	local args = { ... }
+	if args[1] == "scd_spawn_waves" then table.remove(args, 1) end
+
+	if string.lower(tostring(args[1] or "")) == "stop" then
+		if Commands.scd_wave_jobs[id] then
+			Commands.scd_wave_jobs[id] = nil
+			print("[SCD-PERF] scd_spawn_waves: серия игрока " .. tostring(id) .. " остановлена")
+		else
+			print("[SCD-PERF] scd_spawn_waves: у игрока " .. tostring(id) .. " нет запущенной серии")
+		end
+		return
+	end
+
+	local waves = tonumber(args[1])
+	if not waves or waves < 1 then
+		print("[SCD-PERF] usage: scd_spawn_waves <кол-во волн> [интервал_сек=5] [неуязвимые=0] | stop")
+		print("[SCD-PERF]   неуязвимые=1 замораживает число крипов (они не умирают) - нагрузка")
+		print("[SCD-PERF]   стабильная и два замера сравнимы, но это не похоже на живой матч;")
+		print("[SCD-PERF]   неуязвимые=0 (по умолчанию) - обычная игра, крипы воюют и гибнут.")
+		return
+	end
+	waves = math.floor(waves)
+	local interval = tonumber(args[2]) or 5
+	if interval < 0.5 then interval = 0.5 end
+	local invuln = (tonumber(args[3]) or 0) ~= 0
+
+	local alive0, creeps0 = SCD_PerfLoad()
+	Commands.scd_wave_jobs[id] = { left = waves, total = waves, interval = interval, invuln = invuln }
+	print(string.format("[SCD-PERF] scd_spawn_waves: %d волн с интервалом %.1f с, неуязвимые=%s, SCD_CREEP_COSMETICS=%s; сейчас живых %d (крипов %d), prop_dynamic %d",
+		waves, interval, tostring(invuln), tostring(not not _G.SCD_CREEP_COSMETICS),
+		alive0, creeps0, SCD_PerfCountProps()))
+
+	Timers:CreateTimer(0, function()
+		local job = Commands.scd_wave_jobs[id]
+		if not job then return nil end          -- отменено через scd_spawn_waves stop
+		local barracks, pinned = SCD_PerfSpawnRound(job.invuln)
+		job.left = job.left - 1
+		local alive, creeps = SCD_PerfLoad()
+		print(string.format("[SCD-PERF] волна %d/%d: бараков %d, живых %d (крипов %d), prop_dynamic %d%s",
+			job.total - job.left, job.total, barracks, alive, creeps, SCD_PerfCountProps(),
+			pinned > 0 and (", сделано неуязвимыми " .. pinned) or ""))
+		if job.left <= 0 then
+			Commands.scd_wave_jobs[id] = nil
+			print(string.format("[SCD-PERF] scd_spawn_waves: готово, %d волн. Итог: живых %d (крипов %d), prop_dynamic %d",
+				job.total, alive, creeps, SCD_PerfCountProps()))
+			return nil
+		end
+		return job.interval
+	end)
+end
+
+function Commands:SCDCosmetics(...)
+	local argv = { ... }
+	local argc = select("#", ...)
+	local ok, err = pcall(function()
+		return Commands:SCDCosmeticsImpl(unpack(argv, 1, argc))
+	end)
+	if not ok then
+		print("[SCD-PERF] scd_cosmetics FAILED: " .. tostring(err))
+	end
+end
+
+function Commands:SCDCosmeticsImpl(...)
+	local id = SCD_PerfGate("scd_cosmetics")
+	if id == nil then return end
+
+	local args = { ... }
+	if args[1] == "scd_cosmetics" then table.remove(args, 1) end
+	local mode = string.lower(tostring(args[1] or "status"))
+
+	if mode == "status" then
+		local alive, creeps, heroes = SCD_PerfLoad()
+		print(string.format("[SCD-PERF] scd_cosmetics: SCD_CREEP_COSMETICS = %s (%s); живых %d (крипов %d, героев %d), prop_dynamic %d",
+			tostring(not not _G.SCD_CREEP_COSMETICS),
+			_G.SCD_CREEP_COSMETICS and "вид как в оригинале" or "фикс: крипы без декоративных моделей",
+			alive, creeps, heroes, SCD_PerfCountProps()))
+		return
+	end
+	if mode ~= "on" and mode ~= "off" then
+		print("[SCD-PERF] usage: scd_cosmetics on|off|status")
+		print("[SCD-PERF]   on  = декоративные модели крипов создаются (вид как в оригинале)")
+		print("[SCD-PERF]   off = не создаются (фикс FPS); герои рас косметику сохраняют всегда")
+		return
+	end
+
+	_G.SCD_CREEP_COSMETICS = (mode == "on")
+	print(string.format("[SCD-PERF] scd_cosmetics %s -> SCD_CREEP_COSMETICS = %s",
+		mode, tostring(not not _G.SCD_CREEP_COSMETICS)))
+	print("[SCD-PERF] Влияет только на ВПЕРЁД создаваемых юнитов: уже живые крипы не")
+	print("[SCD-PERF] переодеваются. Для сравнения сначала scd_kill_creeps, потом волны.")
+end
+
+function Commands:SCDPerf(...)
+	-- '...' НЕЛЬЗЯ передавать внутрь вложенной не-vararg функции: Lua 5.1 отвечает
+	-- "cannot use '...' outside a vararg function" и отвергает ВЕСЬ файл. Аргументы
+	-- сначала захватываются в локальные переменные -- приём тот же, что в SCDSpawnWaves
+	-- и в авторском SCDAddBot. Ошибку не ловит luaparser (_dsh/lua_check.py), её видно
+	-- только настоящим компилятором (_dsh/lua51_check.py).
+	local argv = { ... }
+	local argc = select("#", ...)
+	local ok, err = pcall(function()
+		return Commands:SCDPerfImpl(unpack(argv, 1, argc))
+	end)
+	if not ok then
+		print("[SCD-PERF] scd_perf FAILED: " .. tostring(err))
+	end
+end
+
+function Commands:SCDPerfImpl(...)
+	local id = SCD_PerfGate("scd_perf")
+	if id == nil then return end
+
+	local alive, creeps, heroes = SCD_PerfLoad()
+	local props = SCD_PerfCountProps()
+	local ft = 0
+	pcall(function() ft = GameRules:GetGameFrameTime() or 0 end)
+	print(string.format("[SCD-PERF] живых юнитов %d (крипов %d, героев %d) | prop_dynamic %d (%.2f на крипа) | SCD_CREEP_COSMETICS=%s | кадр сервера %.2f мс",
+		alive, creeps, heroes, props, creeps > 0 and (props / creeps) or 0,
+		tostring(not not _G.SCD_CREEP_COSMETICS), ft * 1000))
+	local running = 0
+	for _ in pairs(Commands.scd_wave_jobs or {}) do running = running + 1 end
+	if running > 0 then
+		print("[SCD-PERF] запущенных серий волн: " .. tostring(running) .. " (остановка: scd_spawn_waves stop)")
+	end
+	print("[SCD-PERF] FPS здесь не меряется: включи cl_showfps 2 в консоли клиента или сэмплер _dsh/inject_fps_sampler.py ([SCD-FPS] раз в 5 с)")
+end
+
+function Commands:SCDKillCreeps(...)
+	local argv = { ... }
+	local argc = select("#", ...)
+	local ok, err = pcall(function()
+		return Commands:SCDKillCreepsImpl(unpack(argv, 1, argc))
+	end)
+	if not ok then
+		print("[SCD-PERF] scd_kill_creeps FAILED: " .. tostring(err))
+	end
+end
+
+function Commands:SCDKillCreepsImpl(...)
+	local id = SCD_PerfGate("scd_kill_creeps")
+	if id == nil then return end
+
+	local before = SCD_PerfCountProps()
+	local removed = 0
+	for _, u in pairs(SCD_PerfFindAll("npc_dota_creature")) do
+		if u.IsAlive and u:IsAlive() and SCD_PerfIsCreep(u) then
+			-- неуязвимость снимается первой, иначе юнит не убрать
+			pcall(function() u:RemoveModifierByName("modifier_invulnerable") end)
+			local done = false
+			pcall(function() UTIL_Remove(u) done = true end)
+			if not done then
+				pcall(function() u:ForceKill(false) end)
+			end
+			removed = removed + 1
+		end
+	end
+	-- пропы косметики движок убирает вместе с владельцем (проверено: после ForceKill
+	-- 369 крипов prop_dynamic упал с 1196 до 111, осиротевших 0)
+	local alive, creeps, heroes = SCD_PerfLoad()
+	print(string.format("[SCD-PERF] scd_kill_creeps: убрано крипов %d; prop_dynamic %d -> %d; осталось живых %d (крипов %d, героев %d)",
+		removed, before, SCD_PerfCountProps(), alive, creeps, heroes))
 end

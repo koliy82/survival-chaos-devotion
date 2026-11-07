@@ -9,8 +9,11 @@ units_core_mod = class({})
 
 -- [SCD-FIX] Создавать ли декоративные пропы (def_wearables из races.kv) на НЕ-героях.
 -- false = оптимизация включена, true = вид как в оригинале. Обоснование и цифры --
--- у блока war_table ниже.
-_G.SCD_CREEP_COSMETICS = false
+-- у блока war_table ниже. Переключается в рантайме dev-командой scd_cosmetics
+-- (commands.lua, раздел [SCD-PERF]); снаружи значение НЕ затирается.
+if _G.SCD_CREEP_COSMETICS == nil then
+    _G.SCD_CREEP_COSMETICS = false
+end
 
 function units_core_mod:OnCreated( kv )
     if IsServer() then
